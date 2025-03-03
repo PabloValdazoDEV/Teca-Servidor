@@ -2,9 +2,9 @@ const express = require("express");
 const router = express.Router();
 
 const auth = require("./auth");
-const riot = require("./riot");
+const citas = require("./citas");
 
-router.use("/riot", riot)
+router.use("/citas", citas)
 router.use("/", auth);
 
 module.exports = router;

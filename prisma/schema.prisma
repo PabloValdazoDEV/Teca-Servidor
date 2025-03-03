@@ -4,19 +4,144 @@ generator client {
 
 datasource db {
     provider = "postgresql"
-    url = env("DATABASE_URL")
+    url      = env("DATABASE_URL")
 }
 
-enum Role{
+enum Role {
+    SUPERADMIN
     ADMIN
-    USER
+    EMPLOYEE
 }
 
-model User{
-    id String @id @default(uuid())
-    username String @unique
+enum Province {
+    ALAVA
+    ALBACETE
+    ALICANTE
+    ALMERIA
+    ASTURIAS
+    AVILA
+    BADAJOZ
+    BARCELONA
+    BURGOS
+    CACERES
+    CADIZ
+    CANTABRIA
+    CASTELLON
+    CIUDAD_REAL
+    CORDOBA
+    LA_CORUNA
+    CUENCA
+    GERONA
+    GRANADA
+    GUADALAJARA
+    GUIPUZCOA
+    HUELVA
+    HUESCA
+    ISLAS_BALEARES
+    JAEN
+    LEON
+    LERIDA
+    LUGO
+    MADRID
+    MALAGA
+    MURCIA
+    NAVARRA
+    ORENSE
+    PALENCIA
+    LAS_PALMAS
+    PONTEVEDRA
+    LA_RIOJA
+    SALAMANCA
+    SEGOVIA
+    SEVILLA
+    SORIA
+    TARRAGONA
+    SANTA_CRUZ_DE_TENERIFE
+    TERUEL
+    TOLEDO
+    VALENCIA
+    VALLADOLID
+    VIZCAYA
+    ZAMORA
+    ZARAGOZA
+}
+
+enum PreferredCommunication {
+    WHATSAPP
+    SMS
+    EMAIL
+    PHONE
+}
+
+enum FileType {
+    FILE
+    OTHER
+}
+
+enum DateAdvance {
+    TRUE
+    FALSE
+}
+
+model User {
+    id            String         @id @default(uuid())
+    email         String         @unique
+    name          String
+    lastName      String
+    password      String
+    role          Role           @default(EMPLOYEE)
+    createdAt     DateTime       @default(now())
+    updatedAt     DateTime       @updatedAt
+    appointments  Date[]
+    lastPasswords LastPassword[]
+}
+
+model LastPassword {
+    id       String @id @unique @default(uuid())
+    userId   String
     password String
-    role Role @default(USER)
-    createdAt DateTime @default(now())
-    updatedAt DateTime @updatedAt
+    user     User   @relation(fields: [userId], references: [id])
+}
+
+model Customer {
+    id                     String                 @id @unique @default(uuid())
+    fullName               String
+    age                    Int
+    phone                  Int[]
+    communicationPhone     Int
+    weight                 Int
+    height                 Int
+    profession             String
+    province               Province
+    population             String
+    cD                     Int
+    address                String
+    emailAddress           String?
+    children               Int
+    observationChildren    String?
+    dateBirth              DateTime
+    preferredCommunication PreferredCommunication @default(PHONE)
+    docs                   Doc[]
+    appointments           Date[]
+}
+
+model Doc {
+    id         String   @id @unique @default(uuid())
+    customerId String
+    dateId     String?
+    file       String
+    fileName   String
+    customer   Customer @relation(fields: [customerId], references: [id])
+}
+
+model Date {
+    id              String      @id @unique @default(uuid())
+    userId          String
+    customerId      String
+    docId           String
+    advance_date    DateAdvance @default(FALSE)
+    time            Int
+    dateObservation String
+    user            User        @relation(fields: [userId], references: [id])
+    customer        Customer    @relation(fields: [customerId], references: [id])
 }
