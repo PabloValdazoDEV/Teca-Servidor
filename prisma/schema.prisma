@@ -128,7 +128,6 @@ model Customer {
 model Doc {
     id         String   @id @unique @default(uuid())
     customerId String
-    dateId     String?
     file       String
     fileName   String
     customer   Customer @relation(fields: [customerId], references: [id])
@@ -136,12 +135,12 @@ model Doc {
 
 model Date {
     id              String      @id @unique @default(uuid())
+    citaDate        DateTime
     userId          String
     customerId      String
-    docId           String
     advance_date    DateAdvance @default(FALSE)
     time            Int
-    dateObservation String
+    dateObservation String?
     user            User        @relation(fields: [userId], references: [id])
     customer        Customer    @relation(fields: [customerId], references: [id])
 }
