@@ -25,38 +25,16 @@ function convertToISOString(date) {
   return date.toISOString();
 }
 
-const citas = [
-  {
-    id: 1,
-    title: "Paciente: Juan",
-    start: "2025-03-04 10:00:00",
-    end: addMinutesToDate("2025-03-04 10:00:00", 90),
-    trabajador: "1",
-  },
-  {
-    id: 2,
-    title: "Paciente: Ana",
-    start: "2025-03-04 11:00:00",
-    end: "2025-03-04 12:00:00",
-    trabajador: "2",
-  },
-  {
-    id: 3,
-    title: "Paciente: Carlos",
-    start: "2025-03-03 12:02:00",
-    end: "2025-03-03 13:02:00",
-    trabajador: "1",
-  },
-];
-
-router.post("/calendario", authMiddleware, async (req, res) => {
-  const { citaDate, userId, customerId, time } = req.body;
+router.post("/dateCreate", authMiddleware, async (req, res) => {
+  const { citaDate, userId, customerId, time, dateObservation, dateAdvance } =
+    req.body;
+  const timeN = Number(time);
 
   const startDateTime = new Date(citaDate);
-  const endDateTime = new Date(startDateTime.getTime() + time * 60000);
+  const endDateTime = new Date(startDateTime.getTime() + timeN * 60000);
 
   try {
-    if (!citaDate || !userId || !customerId || !time) {
+    if (!citaDate || !userId || !customerId || !timeN) {
       return res.status(500).json({ message: "Server error" });
     }
 
@@ -94,7 +72,9 @@ router.post("/calendario", authMiddleware, async (req, res) => {
         citaDate: new Date(citaDate),
         userId,
         customerId,
-        time,
+        time: timeN,
+        dateObservation,
+        advance_date: dateAdvance ? "TRUE" : "FALSE",
       },
     });
     console.log("Cita creada");
@@ -108,49 +88,101 @@ router.post("/calendario", authMiddleware, async (req, res) => {
 router.get("/calendario", async (req, res) => {
   const { trabajador } = req.query;
 
-  if (!trabajador) {
-    return res.status(400).json({ error: "Falta el parámetro trabajador" });
+  try {
+    if (!trabajador) {
+      return res.status(400).json({ error: "Falta el parámetro trabajador" });
+    }
+    const trabajadorFind = await prisma.user.findUnique({
+      where: { id: trabajador },
+    });
+
+    if (!trabajadorFind) {
+      return res.status(400).json({ error: "User not find" });
+    }
+
+    const citasFiltradas = await prisma.date.findMany({
+      where: {
+        userId: trabajador,
+      },
+      include: {
+        customer: true,
+        user: true,
+      },
+    });
+
+    if (citasFiltradas.length === 0) {
+      return res
+        .status(404)
+        .json({ message: "No hay citas para este trabajador" });
+    }
+
+    const dataDate = citasFiltradas.map((cita) => {
+      const { citaDate, advance_date, customer, user, time, dateObservation } =
+        cita;
+
+      return {
+        userId: user.id,
+        userName: user.name,
+        customerName: customer.fullName,
+        start: addMinutesToDate(convertToISOString(citaDate), 0),
+        end: addMinutesToDate(convertToISOString(citaDate), time),
+        advance_date: advance_date,
+        dateObservation: dateObservation,
+      };
+    });
+
+    res.json(dataDate);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
   }
-  const trabajadorFind = await prisma.user.findUnique({
-    where: { id: trabajador },
-  });
-
-  if (!trabajadorFind) {
-    return res.status(400).json({ error: "User not find" });
-  }
-
-  const citasFiltradas = await prisma.date.findMany({
-    where: {
-      userId: trabajador,
-    },
-    include: {
-      customer: true,
-      user: true,
-    },
-  });
-
-  if (citasFiltradas.length === 0) {
-    return res
-      .status(404)
-      .json({ message: "No hay citas para este trabajador" });
-  }
-
-  const dataDate = citasFiltradas.map((cita) => {
-    const { citaDate, advance_date, customer, user, time, dateObservation } =
-      cita;
-
-    return {
-      userId: user.id,
-      userName: user.name,
-      customerName: customer.fullName,
-      start:addMinutesToDate(convertToISOString(citaDate), 0),
-      end: addMinutesToDate(convertToISOString(citaDate), time),
-      advance_date: advance_date,
-      dateObservation: dateObservation,
-    };
-  });
-
-  res.json(dataDate);
 });
+
+router.get("/createForm", authMiddleware, async (req, res) => {
+  try {
+    const dataCustomers = await prisma.customer.findMany({});
+    const dataUsers = await prisma.user.findMany({});
+    res.json({
+      dataCustomers: dataCustomers,
+      dataUsers: dataUsers,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.get("/createCalendar/:id", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const dataDatesUser = await prisma.date.findMany({
+      where: {
+        userId: id,
+      },
+      include:{
+        customer:true
+      }
+    });
+    res.send(dataDatesUser);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.delete("/delete/:id", authMiddleware, async (req, res)=>{
+  const {id} = req.params
+  try {
+    await prisma.date.delete({
+      where:{
+        id
+      }
+    })
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+
+})
 
 module.exports = router;
