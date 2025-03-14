@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const authMiddleware = require("../middelwares/authMiddleware");
 const prisma = require("../prisma/prisma");
+const sendSms = require("../config/sendSms");
 
 require("dotenv").config();
 
@@ -25,9 +26,29 @@ function convertToISOString(date) {
   return date.toISOString();
 }
 
+router.post("/sendCommunication", authMiddleware, async (req, res) => {
+  const { to, message } = req.body;
+  console.log(to, message);
+  try {
+    const response = await sendSms(to, message);
+    res.status(200).json({ success: true, response });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.post("/dateCreate", authMiddleware, async (req, res) => {
-  const { citaDate, userId, customerId, time, dateObservation, dateAdvance } =
-    req.body;
+  const {
+    citaDate,
+    userId,
+    customer,
+    time,
+    dateObservation,
+    dateAdvance,
+    customerId,
+    message,
+  } = req.body;
+
   const timeN = Number(time);
 
   const startDateTime = new Date(citaDate);
@@ -35,41 +56,51 @@ router.post("/dateCreate", authMiddleware, async (req, res) => {
 
   try {
     if (!citaDate || !userId || !customerId || !timeN) {
-      return res.status(500).json({ message: "Server error" });
+      return res.status(400).json({ message: "Datos incompletos" });
     }
 
     const customeDate = await prisma.customer.findUnique({
       where: { id: customerId },
     });
     if (!customeDate) {
-      return res.status(500).json({ message: "Customer not find" });
+      return res.status(404).json({ message: "Cliente no encontrado" });
     }
 
     const overlappingAppointment = await prisma.date.findFirst({
       where: {
         userId,
-        AND: [
+        OR: [
           {
-            citaDate: {
-              lte: endDateTime,
-            },
+            AND: [
+              { citaDate: { lt: endDateTime } },
+              {
+                citaDate: {
+                  gte: startDateTime,
+                },
+              },
+            ],
           },
           {
-            citaDate: {
-              gte: startDateTime,
-            },
+            AND: [
+              { citaDate: { lte: startDateTime } },
+              {
+                citaDate: {
+                  gt: new Date(startDateTime.getTime() - timeN * 60000),
+                },
+              },
+            ],
           },
         ],
       },
     });
 
     if (overlappingAppointment) {
-      return res.status(500).json({ message: "Ya hay una cita a esa hora" });
+      return res.status(409).json({ message: "Ya hay una cita a esa hora" });
     }
 
     await prisma.date.create({
       data: {
-        citaDate: new Date(citaDate),
+        citaDate: startDateTime,
         userId,
         customerId,
         time: timeN,
@@ -77,8 +108,14 @@ router.post("/dateCreate", authMiddleware, async (req, res) => {
         advance_date: dateAdvance ? "TRUE" : "FALSE",
       },
     });
+
     console.log("Cita creada");
-    res.json({ Status: "Petición hecha" });
+
+    // await sendSms(customerPhone, message);
+
+    // console.log("Sms Enviado");
+
+    res.json({ Status: "Cita creada correctamente" });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error" });
@@ -159,9 +196,9 @@ router.get("/createCalendar/:id", authMiddleware, async (req, res) => {
       where: {
         userId: id,
       },
-      include:{
-        customer:true
-      }
+      include: {
+        customer: true,
+      },
     });
     res.send(dataDatesUser);
   } catch (error) {
@@ -170,19 +207,71 @@ router.get("/createCalendar/:id", authMiddleware, async (req, res) => {
   }
 });
 
-router.delete("/delete/:id", authMiddleware, async (req, res)=>{
-  const {id} = req.params
+router.delete("/delete/:id", authMiddleware, async (req, res) => {
+  const { id } = req.params;
   try {
     await prisma.date.delete({
-      where:{
-        id
-      }
-    })
+      where: {
+        id,
+      },
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error" });
   }
+});
 
+router.post("/update", authMiddleware, async (req, res) => {
+  // console.log(req.body);
+
+  const { dateId, citaDate, userId, time, dateAdvance, message, customer, dateObservation  } =
+    req.body;
+
+  try {
+    const changeDate = await prisma.date.findUnique({
+      where: { id: dateId },
+      select: { citaDate: true },
+    });
+    await prisma.date.update({
+      where: {
+        id: dateId,
+      },
+      data: {
+        userId,
+        time: +time,
+        advance_date: dateAdvance ? "TRUE" : "FALSE",
+        citaDate: new Date(citaDate),
+        dateObservation
+      },
+    });
+    res.json({ message: "Cita editada correctamente" });
+
+    console.log(changeDate)
+
+    // await sendSms(customerPhone, message);
+
+    // console.log("Sms Enviado Cita editada");
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.get('/users', authMiddleware, async (req, res)=>{
+  try {
+    const response = await prisma.user.findMany({
+      select:{
+        name: true,
+        lastName: true,
+        id: true
+      }
+    })
+    console.log(response)
+    res.send(response)
+    
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 })
 
 module.exports = router;
