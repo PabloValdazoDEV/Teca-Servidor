@@ -139,6 +139,7 @@ model Date {
     userId          String
     customerId      String
     advance_date    DateAdvance @default(FALSE)
+    urgent_date     Boolean?
     time            Int
     dateObservation String?
     user            User        @relation(fields: [userId], references: [id])

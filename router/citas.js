@@ -47,12 +47,41 @@ router.post("/dateCreate", authMiddleware, async (req, res) => {
     dateAdvance,
     customerId,
     message,
+    urgent_date,
   } = req.body;
-
   const timeN = Number(time);
 
-  const startDateTime = new Date(citaDate);
+  if (!citaDate) {
+    return res.status(400).json({ message: "Fecha inválida o no definida" });
+  }
+
+  const startDateTime = new Date(
+    Math.floor(new Date(citaDate).getTime() / 1000) * 1000
+  );
   const endDateTime = new Date(startDateTime.getTime() + timeN * 60000);
+
+  if (isNaN(startDateTime.getTime())) {
+    console.error("Fecha inválida:", citaDate);
+    return res.status(400).json({ message: "Fecha inválida o malformateada" });
+  }
+
+  const dayOfWeek = startDateTime.getDay();
+
+  if (
+    (dayOfWeek >= 1 &&
+      dayOfWeek <= 4 &&
+      (endDateTime.getHours() > 22 ||
+        (endDateTime.getHours() === 22 && endDateTime.getMinutes() > 0))) ||
+    (dayOfWeek === 5 &&
+      (endDateTime.getHours() > 16 ||
+        (endDateTime.getHours() === 16 && endDateTime.getMinutes() > 0)))
+  ) {
+    return res.status(400).json({
+      message: `Las citas solo pueden terminar hasta las ${
+        dayOfWeek === 5 ? "16:00 los viernes" : "22:00 de lunes a jueves"
+      }`,
+    });
+  }
 
   try {
     if (!citaDate || !userId || !customerId || !timeN) {
@@ -65,36 +94,44 @@ router.post("/dateCreate", authMiddleware, async (req, res) => {
     if (!customeDate) {
       return res.status(404).json({ message: "Cliente no encontrado" });
     }
-
-    const overlappingAppointment = await prisma.date.findFirst({
+    // Verificamos citas anteriores que podrían superponerse
+    const previousAppointment = await prisma.date.findFirst({
       where: {
         userId,
-        OR: [
-          {
-            AND: [
-              { citaDate: { lt: endDateTime } },
-              {
-                citaDate: {
-                  gte: startDateTime,
-                },
-              },
-            ],
-          },
-          {
-            AND: [
-              { citaDate: { lte: startDateTime } },
-              {
-                citaDate: {
-                  gt: new Date(startDateTime.getTime() - timeN * 60000),
-                },
-              },
-            ],
-          },
-        ],
+        citaDate: {
+          lt: startDateTime,
+        },
+      },
+      orderBy: {
+        citaDate: "desc",
       },
     });
 
-    if (overlappingAppointment) {
+    // Calculamos cuando termina la cita anterior (si existe)
+    if (previousAppointment) {
+      const previousEndTime = new Date(
+        previousAppointment.citaDate.getTime() +
+          previousAppointment.time * 60000
+      );
+
+      // Si la cita anterior termina después de que comienza nuestra nueva cita, hay superposición
+      if (previousEndTime > startDateTime) {
+        return res.status(409).json({ message: "Ya hay una cita a esa hora" });
+      }
+    }
+
+    // Verificamos si hay una cita que comienza durante nuestra nueva cita
+    const nextAppointment = await prisma.date.findFirst({
+      where: {
+        userId,
+        citaDate: {
+          gte: startDateTime,
+          lt: endDateTime,
+        },
+      },
+    });
+
+    if (nextAppointment) {
       return res.status(409).json({ message: "Ya hay una cita a esa hora" });
     }
 
@@ -106,6 +143,7 @@ router.post("/dateCreate", authMiddleware, async (req, res) => {
         time: timeN,
         dateObservation,
         advance_date: dateAdvance ? "TRUE" : "FALSE",
+        urgent_date,
       },
     });
 
@@ -221,57 +259,139 @@ router.delete("/delete/:id", authMiddleware, async (req, res) => {
   }
 });
 
-router.post("/update", authMiddleware, async (req, res) => {
-  // console.log(req.body);
+router.put("/update", authMiddleware, async (req, res) => {
+  const {
+    dateId,
+    citaDate,
+    userId,
+    time,
+    dateAdvance,
+    message,
+    customer,
+    dateObservation,
+    customerId,
+    urgent_date
+  } = req.body;
 
-  const { dateId, citaDate, userId, time, dateAdvance, message, customer, dateObservation  } =
-    req.body;
+  const timeN = Number(time);
+
+  const startDateTime = new Date(Math.floor(new Date(citaDate).getTime() / 1000) * 1000);
+  const endDateTime = new Date(startDateTime.getTime() + timeN * 60000);
+
+  if (isNaN(startDateTime.getTime())) {
+    console.error("Fecha inválida:", citaDate);
+    return res.status(400).json({ message: "Fecha inválida o malformateada" });
+  }
+
+  const dayOfWeek = startDateTime.getDay();
+
+  if (
+    (dayOfWeek >= 1 && dayOfWeek <= 4 && (endDateTime.getHours() > 22 || (endDateTime.getHours() === 22 && endDateTime.getMinutes() > 0))) ||
+    (dayOfWeek === 5 && (endDateTime.getHours() > 16 || (endDateTime.getHours() === 16 && endDateTime.getMinutes() > 0)))
+  ) {
+    return res.status(400).json({
+      message: `Las citas solo pueden terminar hasta las ${
+        dayOfWeek === 5 ? "16:00 los viernes" : "22:00 de lunes a jueves"
+      }`,
+    });
+  }
 
   try {
-    const changeDate = await prisma.date.findUnique({
-      where: { id: dateId },
-      select: { citaDate: true },
+    if (!citaDate || !userId || !customerId || !timeN) {
+      return res.status(400).json({ message: "Datos incompletos" });
+    }
+
+    // Verificar que el cliente exista
+    const customeDate = await prisma.customer.findUnique({
+      where: { id: customerId },
     });
+    if (!customeDate) {
+      return res.status(404).json({ message: "Cliente no encontrado" });
+    }
+
+    // Verificar superposición con citas anteriores
+    // Verificar superposición con citas anteriores
+const previousAppointment = await prisma.date.findFirst({
+  where: {
+    userId,
+    id: { not: dateId }, // Excluimos la cita actual de la verificación
+    citaDate: {
+      lt: startDateTime, // Citas que comienzan antes de la nueva cita
+    },
+  },
+  orderBy: {
+    citaDate: "desc",
+  },
+});
+
+if (previousAppointment) {
+  const previousEndTime = new Date(
+    previousAppointment.citaDate.getTime() + previousAppointment.time * 60000
+  );
+
+  // Solo detectar conflicto si la cita anterior termina después de que comienza la nueva cita
+  if (previousEndTime > startDateTime) {
+    return res.status(409).json({ message: "Ya hay una cita a esa hora" });
+  }
+}
+
+// Verificar superposición con citas siguientes
+const nextAppointment = await prisma.date.findFirst({
+  where: {
+    userId,
+    id: { not: dateId }, // Excluimos la cita actual de la verificación
+    citaDate: {
+      gte: startDateTime, // Citas que comienzan después o al mismo tiempo que la nueva cita
+      lt: endDateTime, // Citas que comienzan antes de que termine la nueva cita
+    },
+  },
+});
+if (nextAppointment) {
+  return res.status(409).json({ message: "Ya hay una cita a esa hora" });
+}
+
+    // Actualizar la cita
     await prisma.date.update({
       where: {
         id: dateId,
       },
       data: {
         userId,
-        time: +time,
+        time: timeN,
         advance_date: dateAdvance ? "TRUE" : "FALSE",
-        citaDate: new Date(citaDate),
-        dateObservation
+        citaDate: startDateTime,
+        dateObservation,
+        urgent_date
       },
     });
+
+    console.log("Cita editada correctamente");
     res.json({ message: "Cita editada correctamente" });
-
-    console.log(changeDate)
-
-    // await sendSms(customerPhone, message);
-
-    // console.log("Sms Enviado Cita editada");
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error" });
   }
 });
 
-router.get('/users', authMiddleware, async (req, res)=>{
+router.get("/users", authMiddleware, async (req, res) => {
   try {
     const response = await prisma.user.findMany({
-      select:{
+      select: {
         name: true,
         lastName: true,
-        id: true
-      }
-    })
-    console.log(response)
-    res.send(response)
-    
+        id: true,
+      },
+    });
+    const data = response.map((user) => {
+      return {
+        id: user.id,
+        name: `${user.name} ${user.lastName}`,
+      };
+    });
+    res.send(data);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
-})
+});
 
 module.exports = router;
