@@ -1,10 +1,11 @@
+require("dotenv").config();
+
 const express = require("express");
 const router = express.Router();
 const authMiddleware = require("../middelwares/authMiddleware");
 const prisma = require("../prisma/prisma");
 const sendSms = require("../config/sendSms");
-
-require("dotenv").config();
+const transporter = require("../config/nodemail");
 
 function addMinutesToDate(dateString, minutesToAdd) {
   let date = new Date(dateString.replace(" ", "T"));
@@ -48,6 +49,7 @@ router.post("/dateCreate", authMiddleware, async (req, res) => {
     customerId,
     message,
     urgent_date,
+    sessionPrice,
   } = req.body;
   const timeN = Number(time);
 
@@ -90,6 +92,9 @@ router.post("/dateCreate", authMiddleware, async (req, res) => {
 
     const customeDate = await prisma.customer.findUnique({
       where: { id: customerId },
+      include: {
+        phones: true,
+      },
     });
     if (!customeDate) {
       return res.status(404).json({ message: "Cliente no encontrado" });
@@ -144,14 +149,40 @@ router.post("/dateCreate", authMiddleware, async (req, res) => {
         dateObservation,
         advance_date: dateAdvance ? "TRUE" : "FALSE",
         urgent_date,
+        sessionPrice: +sessionPrice,
       },
     });
 
     console.log("Cita creada");
 
-    // await sendSms(customerPhone, message);
+    if (customeDate.preferredCommunication === "EMAIL") {
+      const mailOptions = {
+        from: `"Centro de Osteopatía TECA" <${process.env.USER_GMAIL}>`,
+        to: customeDate.emailAddress,
+        subject: "📅 Tienes una cita programada en Centro Teca",
+        text: message,
+      };
 
-    // console.log("Sms Enviado");
+      transporter.sendMail(mailOptions, (error, info) => {
+        if (error) {
+          console.error("Error sending email: ", error);
+        } else {
+          console.log("Email sent: ", info.response);
+        }
+      });
+      console.log("Mail Enviado");
+    } else{
+      const phone = customeDate.phones
+        .filter(
+          (phone) => phone.isCommunicationPhone === true && phone.phoneNumber
+        )
+        .map((phone) => `${phone.countryCode} ${phone.phoneNumber}`)
+        .join(" ");
+      console.log(phone);
+
+      // await sendSms(phone, message);
+      console.log("SMS Enviado");
+    }
 
     res.json({ Status: "Cita creada correctamente" });
   } catch (error) {
@@ -180,7 +211,11 @@ router.get("/calendario", async (req, res) => {
         userId: trabajador,
       },
       include: {
-        customer: true,
+        customer: {
+          include: {
+            phones: true,
+          },
+        },
         user: true,
       },
     });
@@ -215,10 +250,27 @@ router.get("/calendario", async (req, res) => {
 
 router.get("/createForm", authMiddleware, async (req, res) => {
   try {
-    const dataCustomers = await prisma.customer.findMany({});
+    const dataCustomers = await prisma.customer.findMany({
+      include: {
+        phones: true,
+      },
+    });
+
+    const sanitizedCustomers = dataCustomers.map((customer) => ({
+      ...customer,
+      id: customer.id.toString(),
+      phones: customer.phones
+        .filter((phone) => phone.phoneNumber)
+        .map((phone) => ({
+          ...phone,
+          id: phone.id.toString(),
+          phoneNumber: phone.phoneNumber.toString(),
+        })),
+    }));
+
     const dataUsers = await prisma.user.findMany({});
     res.json({
-      dataCustomers: dataCustomers,
+      dataCustomers: sanitizedCustomers,
       dataUsers: dataUsers,
     });
   } catch (error) {
@@ -235,10 +287,25 @@ router.get("/createCalendar/:id", authMiddleware, async (req, res) => {
         userId: id,
       },
       include: {
-        customer: true,
+        customer: {
+          include: {
+            phones: true,
+          },
+        },
       },
     });
-    res.send(dataDatesUser);
+
+    const sanitizedResponse = dataDatesUser.map((cita) => ({
+      ...cita,
+      customer: {
+        ...cita.customer,
+        phones: cita.customer.phones.map((phone) => ({
+          ...phone,
+          phoneNumber: phone.phoneNumber.toString(),
+        })),
+      },
+    }));
+    res.send(sanitizedResponse);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error" });
@@ -270,12 +337,15 @@ router.put("/update", authMiddleware, async (req, res) => {
     customer,
     dateObservation,
     customerId,
-    urgent_date
+    urgent_date,
+    sessionPrice,
   } = req.body;
 
   const timeN = Number(time);
 
-  const startDateTime = new Date(Math.floor(new Date(citaDate).getTime() / 1000) * 1000);
+  const startDateTime = new Date(
+    Math.floor(new Date(citaDate).getTime() / 1000) * 1000
+  );
   const endDateTime = new Date(startDateTime.getTime() + timeN * 60000);
 
   if (isNaN(startDateTime.getTime())) {
@@ -286,8 +356,13 @@ router.put("/update", authMiddleware, async (req, res) => {
   const dayOfWeek = startDateTime.getDay();
 
   if (
-    (dayOfWeek >= 1 && dayOfWeek <= 4 && (endDateTime.getHours() > 22 || (endDateTime.getHours() === 22 && endDateTime.getMinutes() > 0))) ||
-    (dayOfWeek === 5 && (endDateTime.getHours() > 16 || (endDateTime.getHours() === 16 && endDateTime.getMinutes() > 0)))
+    (dayOfWeek >= 1 &&
+      dayOfWeek <= 4 &&
+      (endDateTime.getHours() > 22 ||
+        (endDateTime.getHours() === 22 && endDateTime.getMinutes() > 0))) ||
+    (dayOfWeek === 5 &&
+      (endDateTime.getHours() > 16 ||
+        (endDateTime.getHours() === 16 && endDateTime.getMinutes() > 0)))
   ) {
     return res.status(400).json({
       message: `Las citas solo pueden terminar hasta las ${
@@ -304,6 +379,9 @@ router.put("/update", authMiddleware, async (req, res) => {
     // Verificar que el cliente exista
     const customeDate = await prisma.customer.findUnique({
       where: { id: customerId },
+      include: {
+        phones: true,
+      },
     });
     if (!customeDate) {
       return res.status(404).json({ message: "Cliente no encontrado" });
@@ -311,44 +389,54 @@ router.put("/update", authMiddleware, async (req, res) => {
 
     // Verificar superposición con citas anteriores
     // Verificar superposición con citas anteriores
-const previousAppointment = await prisma.date.findFirst({
-  where: {
-    userId,
-    id: { not: dateId }, // Excluimos la cita actual de la verificación
-    citaDate: {
-      lt: startDateTime, // Citas que comienzan antes de la nueva cita
-    },
-  },
-  orderBy: {
-    citaDate: "desc",
-  },
-});
+    const previousAppointment = await prisma.date.findFirst({
+      where: {
+        userId,
+        id: { not: dateId }, // Excluimos la cita actual de la verificación
+        citaDate: {
+          lt: startDateTime, // Citas que comienzan antes de la nueva cita
+        },
+      },
+      orderBy: {
+        citaDate: "desc",
+      },
+    });
 
-if (previousAppointment) {
-  const previousEndTime = new Date(
-    previousAppointment.citaDate.getTime() + previousAppointment.time * 60000
-  );
+    if (previousAppointment) {
+      const previousEndTime = new Date(
+        previousAppointment.citaDate.getTime() +
+          previousAppointment.time * 60000
+      );
 
-  // Solo detectar conflicto si la cita anterior termina después de que comienza la nueva cita
-  if (previousEndTime > startDateTime) {
-    return res.status(409).json({ message: "Ya hay una cita a esa hora" });
-  }
-}
+      // Solo detectar conflicto si la cita anterior termina después de que comienza la nueva cita
+      if (previousEndTime > startDateTime) {
+        return res.status(409).json({ message: "Ya hay una cita a esa hora" });
+      }
+    }
 
-// Verificar superposición con citas siguientes
-const nextAppointment = await prisma.date.findFirst({
-  where: {
-    userId,
-    id: { not: dateId }, // Excluimos la cita actual de la verificación
-    citaDate: {
-      gte: startDateTime, // Citas que comienzan después o al mismo tiempo que la nueva cita
-      lt: endDateTime, // Citas que comienzan antes de que termine la nueva cita
-    },
-  },
-});
-if (nextAppointment) {
-  return res.status(409).json({ message: "Ya hay una cita a esa hora" });
-}
+    // Verificar superposición con citas siguientes
+    const nextAppointment = await prisma.date.findFirst({
+      where: {
+        userId,
+        id: { not: dateId }, // Excluimos la cita actual de la verificación
+        citaDate: {
+          gte: startDateTime, // Citas que comienzan después o al mismo tiempo que la nueva cita
+          lt: endDateTime, // Citas que comienzan antes de que termine la nueva cita
+        },
+      },
+    });
+    if (nextAppointment) {
+      return res.status(409).json({ message: "Ya hay una cita a esa hora" });
+    }
+
+    const fechaActual = await prisma.date.findUnique({
+      where: {
+        id: dateId,
+      },
+      select: {
+        citaDate: true,
+      },
+    });
 
     // Actualizar la cita
     await prisma.date.update({
@@ -361,11 +449,42 @@ if (nextAppointment) {
         advance_date: dateAdvance ? "TRUE" : "FALSE",
         citaDate: startDateTime,
         dateObservation,
-        urgent_date
+        urgent_date,
+        sessionPrice: +sessionPrice,
       },
     });
-
     console.log("Cita editada correctamente");
+
+    if (fechaActual.citaDate.getTime() !== startDateTime.getTime()) {
+      if (customeDate.preferredCommunication === "EMAIL") {
+        const mailOptions = {
+          from: `"Centro de Osteopatía TECA" <${process.env.USER_GMAIL}>`,
+          to: customeDate.emailAddress,
+          subject: "📅 Hemos reprogramado tu cita",
+          text: message,
+        };
+
+        transporter.sendMail(mailOptions, (error, info) => {
+          if (error) {
+            console.error("Error sending email: ", error);
+          } else {
+            console.log("Email sent: ", info.response);
+          }
+        });
+        console.log("Mail Enviado");
+      } else{
+        const phone = customeDate.phones
+          .filter(
+            (phone) => phone.isCommunicationPhone === true && phone.phoneNumber
+          )
+          .map((phone) => `${phone.countryCode} ${phone.phoneNumber}`)
+          .join(" ");
+
+        // await sendSms(phone, message);
+        console.log("SMS Enviado");
+      }
+    }
+
     res.json({ message: "Cita editada correctamente" });
   } catch (error) {
     console.error(error);
