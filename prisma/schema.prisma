@@ -14,6 +14,7 @@ enum Role {
 }
 
 enum Province {
+    OTRO
     ALAVA
     ALBACETE
     ALICANTE
@@ -74,13 +75,48 @@ enum PreferredCommunication {
 }
 
 enum FileType {
-    FILE
-    OTHER
+    DOC
+    EXCEL
+    PDF
+    IMG
+    VIDEO
+    OTRO
+}
+
+enum FixedDocType {
+    FICHA
+    HISTORIAL_CLINICO
+    VISCERAL_CRANEAL
 }
 
 enum DateAdvance {
     TRUE
     FALSE
+}
+
+enum BodyPart {
+    PELVIS
+    COLUMNA
+    CLAVICULA
+    RODILLA
+    FS
+    ES
+    CERVICALES
+    OTRA
+}
+
+enum SubBodyPart {
+    LFX
+    I
+    ILI
+    F
+    E
+    RO
+    H
+    IZQ
+    DCH
+    TRS
+    OTRO
 }
 
 model User {
@@ -100,37 +136,28 @@ model LastPassword {
     id       String @id @unique @default(uuid())
     userId   String
     password String
-    user     User   @relation(fields: [userId], references: [id])
+    user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Customer {
-    id                     String                 @id @unique @default(uuid())
-    fullName               String
-    age                    Int
-    phone                  Int[]
-    communicationPhone     Int
-    weight                 Int
-    height                 Int
-    profession             String
-    province               Province
-    population             String
-    cD                     Int
-    address                String
+    id                     String                  @id @unique @default(uuid())
+    fullName               String?
+    age                    Int?
+    weight                 Int?
+    height                 Int?
+    profession             String?
+    province               Province?
+    population             String?
+    cD                     Int?
+    address                String?
     emailAddress           String?
-    children               Int
+    children               Int?
     observationChildren    String?
-    dateBirth              DateTime
-    preferredCommunication PreferredCommunication @default(PHONE)
+    dateBirth              DateTime?
+    preferredCommunication PreferredCommunication? @default(SMS)
     docs                   Doc[]
     appointments           Date[]
-}
-
-model Doc {
-    id         String   @id @unique @default(uuid())
-    customerId String
-    file       String
-    fileName   String
-    customer   Customer @relation(fields: [customerId], references: [id])
+    phones                 PhoneNumber[]
 }
 
 model Date {
@@ -142,6 +169,48 @@ model Date {
     urgent_date     Boolean?
     time            Int
     dateObservation String?
-    user            User        @relation(fields: [userId], references: [id])
-    customer        Customer    @relation(fields: [customerId], references: [id])
+    sessionPrice    Int?
+    user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+    customer        Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+    Ficha           Ficha[]
+}
+
+model PhoneNumber {
+    id                   String   @id @unique @default(uuid())
+    customerId           String
+    countryCode          String   @default("+34")
+    phoneNumber          BigInt
+    isCommunicationPhone Boolean  @default(false)
+    customer             Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+}
+
+model Doc {
+    id         String       @id @unique @default(uuid())
+    typeDoc    FileType
+    fixedType  FixedDocType
+    customerId String
+    file       String?
+    fileName   String?
+    customer   Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+    Fichas     Ficha[]
+}
+
+model Ficha {
+    id              String               @id @unique @default(uuid())
+    dateFichaId     String?
+    docId           String
+    observations    String?
+    treatmentPlan   String?
+    bodyAssessments BodyPartAssessment[]
+    doc             Doc                  @relation(fields: [docId], references: [id], onDelete: Cascade)
+    date            Date?                 @relation(fields: [dateFichaId], references: [id], onDelete: Cascade)
+}
+
+model BodyPartAssessment {
+    id          String      @id @unique @default(uuid())
+    fichaId     String
+    bodyPart    BodyPart
+    subBodyPart SubBodyPart
+    description String
+    ficha       Ficha       @relation(fields: [fichaId], references: [id], onDelete: Cascade)
 }
