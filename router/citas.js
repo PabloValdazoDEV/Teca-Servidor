@@ -9,11 +9,17 @@ const transporter = require("../config/nodemail");
 const { DateTime } = require("luxon");
 
 function addMinutesToDate(dateString, minutesToAdd) {
-  const date = DateTime.fromISO(dateString.replace(" ", "T"), {
+  const parsedDate = DateTime.fromISO(dateString.replace(" ", "T"), {
     zone: "Europe/Madrid",
-  }).plus({ minutes: minutesToAdd });
+  });
 
-  return date.toFormat("yyyy-MM-dd HH:mm:ss");
+  if (!parsedDate.isValid) {
+    throw new Error("Fecha inválida o malformateada");
+  }
+
+  const updatedDate = parsedDate.plus({ minutes: minutesToAdd });
+
+  return updatedDate.toFormat("yyyy-MM-dd HH:mm:ss");
 }
 
 function convertToISOString(date) {
@@ -53,9 +59,14 @@ router.post("/dateCreate", authMiddleware, async (req, res) => {
     return res.status(400).json({ message: "Fecha inválida o no definida" });
   }
 
-  const startDateTime = DateTime.fromISO(citaDate, {
+  const parsedDate = DateTime.fromISO(citaDate.replace(" ", "T"), {
     zone: "Europe/Madrid",
-  }).startOf("minute").toJSDate();
+  });
+  if (!parsedDate.isValid) {
+    return res.status(400).json({ message: "Fecha inválida o malformateada" });
+  }
+  const startDateTime = parsedDate.startOf("minute").toJSDate();
+  
   const endDateTime = new Date(startDateTime.getTime() + timeN * 60000);
 
   if (isNaN(startDateTime.getTime())) {
@@ -339,9 +350,13 @@ router.put("/update", authMiddleware, async (req, res) => {
 
   const timeN = Number(time);
 
-  const startDateTime = DateTime.fromISO(citaDate, {
+  const parsedDate = DateTime.fromISO(citaDate.replace(" ", "T"), {
     zone: "Europe/Madrid",
-  }).startOf("minute").toJSDate();
+  });
+  if (!parsedDate.isValid) {
+    return res.status(400).json({ message: "Fecha inválida o malformateada" });
+  }
+  const startDateTime = parsedDate.startOf("minute").toJSDate();
   const endDateTime = new Date(startDateTime.getTime() + timeN * 60000);
 
   if (isNaN(startDateTime.getTime())) {
