@@ -6,18 +6,14 @@ const authMiddleware = require("../middelwares/authMiddleware");
 const prisma = require("../prisma/prisma");
 const sendSms = require("../config/sendSms");
 const transporter = require("../config/nodemail");
+const { DateTime } = require("luxon");
 
 function addMinutesToDate(dateString, minutesToAdd) {
-  let date = new Date(dateString.replace(" ", "T"));
-  date.setMinutes(date.getMinutes() + minutesToAdd);
-  let year = date.getFullYear();
-  let month = String(date.getMonth() + 1).padStart(2, "0");
-  let day = String(date.getDate()).padStart(2, "0");
-  let hours = String(date.getHours()).padStart(2, "0");
-  let minutes = String(date.getMinutes()).padStart(2, "0");
-  let seconds = String(date.getSeconds()).padStart(2, "0");
+  const date = DateTime.fromISO(dateString.replace(" ", "T"), {
+    zone: "Europe/Madrid",
+  }).plus({ minutes: minutesToAdd });
 
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+  return date.toFormat("yyyy-MM-dd HH:mm:ss");
 }
 
 function convertToISOString(date) {
@@ -57,9 +53,9 @@ router.post("/dateCreate", authMiddleware, async (req, res) => {
     return res.status(400).json({ message: "Fecha inválida o no definida" });
   }
 
-  const startDateTime = new Date(
-    Math.floor(new Date(citaDate).getTime() / 1000) * 1000
-  );
+  const startDateTime = DateTime.fromISO(citaDate, {
+    zone: "Europe/Madrid",
+  }).startOf("minute").toJSDate();
   const endDateTime = new Date(startDateTime.getTime() + timeN * 60000);
 
   if (isNaN(startDateTime.getTime())) {
@@ -343,9 +339,9 @@ router.put("/update", authMiddleware, async (req, res) => {
 
   const timeN = Number(time);
 
-  const startDateTime = new Date(
-    Math.floor(new Date(citaDate).getTime() / 1000) * 1000
-  );
+  const startDateTime = DateTime.fromISO(citaDate, {
+    zone: "Europe/Madrid",
+  }).startOf("minute").toJSDate();
   const endDateTime = new Date(startDateTime.getTime() + timeN * 60000);
 
   if (isNaN(startDateTime.getTime())) {

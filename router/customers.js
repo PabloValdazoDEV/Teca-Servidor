@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const authMiddleware = require("../middelwares/authMiddleware");
 const prisma = require("../prisma/prisma");
+const { DateTime } = require("luxon");
 
 router.post("/create", authMiddleware, async (req, res) => {
   console.log(req.body);
@@ -23,7 +24,7 @@ router.post("/create", authMiddleware, async (req, res) => {
     preferredCommunication,
   } = req.body;
 
-  const date = new Date(dateBirth);
+  const date = DateTime.fromISO(dateBirth, { zone: "Europe/Madrid" }).toJSDate();
   try {
     await prisma.customer.create({
         data: {
@@ -151,7 +152,7 @@ router.put("/edit", authMiddleware, async (req, res)=>{
         preferredCommunication,
       } = req.body;
 
-      const date = new Date(dateBirth);
+      const date = DateTime.fromISO(dateBirth, { zone: "Europe/Madrid" }).toJSDate();
     try {
         const response = await prisma.customer.update({
             where:{
@@ -206,7 +207,7 @@ router.get("/delete/:id", authMiddleware, async (req, res) => {
             where: {
                 customerId: id,
                 citaDate: {
-                    gte: new Date() 
+                  gte: DateTime.now().setZone("Europe/Madrid").toJSDate()
                 }
             },
             orderBy: {
