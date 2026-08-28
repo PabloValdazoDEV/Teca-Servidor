@@ -4,37 +4,43 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test",
     "dev": "nodemon app.js",
     "seed": "node prisma/seed.js",
-    "deploy": "npm install && npx prisma generate",
-    "db": "npx prisma db push"
+    "seed_user": "node prisma/seed_user.js",
+    "deploy": "npm ci --include=dev && prisma generate && npm prune --omit=dev",
+    "db": "prisma db push",
+    "import:plan": "node scripts/importLegacyPatients.js",
+    "import:apply": "node scripts/importLegacyPatients.js --apply"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@prisma/client": "^6.5.0",
-    "bcrypt": "^5.1.1",
-    "connect-pg-simple": "^10.0.0",
+    "@prisma/client": "6.12.0",
+    "archiver": "^8.0.0",
+    "bcrypt": "^6.0.0",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
     "express": "^4.21.2",
-    "express-session": "^1.18.1",
+    "express-rate-limit": "^8.6.2",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
     "luxon": "^3.6.1",
-    "method-override": "^3.0.0",
-    "morgan": "^1.10.0",
-    "multer": "^1.4.5-lts.2",
-    "nodemailer": "^6.10.0",
-    "passport": "^0.7.0",
-    "passport-local": "^1.0.0",
+    "multer": "^2.2.0",
+    "nodemailer": "^9.0.6",
     "pg": "^8.13.3",
-    "prisma": "^6.5.0",
     "twilio": "^5.4.5"
   },
   "devDependencies": {
     "@faker-js/faker": "^9.4.0",
-    "nodemon": "^3.1.9"
+    "nodemon": "^3.1.9",
+    "prisma": "6.12.0",
+    "supertest": "^7.2.2"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
   }
 }

@@ -1,216 +1,335 @@
 generator client {
-    provider = "prisma-client-js"
+  provider = "prisma-client-js"
 }
 
 datasource db {
-    provider = "postgresql"
-    url      = env("DATABASE_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 enum Role {
-    SUPERADMIN
-    ADMIN
-    EMPLOYEE
+  SUPERADMIN
+  ADMIN
+  EMPLOYEE
 }
 
 enum Province {
-    OTRO
-    ALAVA
-    ALBACETE
-    ALICANTE
-    ALMERIA
-    ASTURIAS
-    AVILA
-    BADAJOZ
-    BARCELONA
-    BURGOS
-    CACERES
-    CADIZ
-    CANTABRIA
-    CASTELLON
-    CIUDAD_REAL
-    CORDOBA
-    LA_CORUNA
-    CUENCA
-    GERONA
-    GRANADA
-    GUADALAJARA
-    GUIPUZCOA
-    HUELVA
-    HUESCA
-    ISLAS_BALEARES
-    JAEN
-    LEON
-    LERIDA
-    LUGO
-    MADRID
-    MALAGA
-    MURCIA
-    NAVARRA
-    ORENSE
-    PALENCIA
-    LAS_PALMAS
-    PONTEVEDRA
-    LA_RIOJA
-    SALAMANCA
-    SEGOVIA
-    SEVILLA
-    SORIA
-    TARRAGONA
-    SANTA_CRUZ_DE_TENERIFE
-    TERUEL
-    TOLEDO
-    VALENCIA
-    VALLADOLID
-    VIZCAYA
-    ZAMORA
-    ZARAGOZA
+  OTRO
+  ALAVA
+  ALBACETE
+  ALICANTE
+  ALMERIA
+  ASTURIAS
+  AVILA
+  BADAJOZ
+  BARCELONA
+  BURGOS
+  CACERES
+  CADIZ
+  CANTABRIA
+  CASTELLON
+  CIUDAD_REAL
+  CORDOBA
+  LA_CORUNA
+  CUENCA
+  GERONA
+  GRANADA
+  GUADALAJARA
+  GUIPUZCOA
+  HUELVA
+  HUESCA
+  ISLAS_BALEARES
+  JAEN
+  LEON
+  LERIDA
+  LUGO
+  MADRID
+  MALAGA
+  MURCIA
+  NAVARRA
+  ORENSE
+  PALENCIA
+  LAS_PALMAS
+  PONTEVEDRA
+  LA_RIOJA
+  SALAMANCA
+  SEGOVIA
+  SEVILLA
+  SORIA
+  TARRAGONA
+  SANTA_CRUZ_DE_TENERIFE
+  TERUEL
+  TOLEDO
+  VALENCIA
+  VALLADOLID
+  VIZCAYA
+  ZAMORA
+  ZARAGOZA
 }
 
 enum PreferredCommunication {
-    WHATSAPP
-    SMS
-    EMAIL
-    PHONE
+  WHATSAPP
+  SMS
+  EMAIL
+  PHONE
+}
+
+enum PhoneKind {
+  MOBILE
+  LANDLINE
+  OTHER
+}
+
+enum PractitionerStatus {
+  SCHEDULE_ONLY
+  INVITED
+  ACTIVE
+  INACTIVE
+}
+
+enum DocumentStatus {
+  ACTIVE
+  QUARANTINED
+  ARCHIVED
 }
 
 enum FileType {
-    DOC
-    EXCEL
-    PDF
-    IMG
-    VIDEO
-    OTRO
+  DOC
+  EXCEL
+  PDF
+  IMG
+  VIDEO
+  OTRO
 }
 
 enum FixedDocType {
-    FICHA
-    HISTORIAL_CLINICO
-    VISCERAL_CRANEAL
+  FICHA
+  HISTORIAL_CLINICO
+  VISCERAL_CRANEAL
 }
 
 enum DateAdvance {
-    TRUE
-    FALSE
+  TRUE
+  FALSE
 }
 
 enum BodyPart {
-    PELVIS
-    COLUMNA
-    CLAVICULA
-    RODILLA
-    FS
-    ES
-    CERVICALES
-    OTRA
+  PELVIS
+  COLUMNA
+  CLAVICULA
+  RODILLA
+  FS
+  ES
+  CERVICALES
+  OTRA
 }
 
 enum SubBodyPart {
-    LFX
-    I
-    ILI
-    F
-    E
-    RO
-    H
-    IZQ
-    DCH
-    TRS
-    OTRO
+  LFX
+  I
+  ILI
+  F
+  E
+  RO
+  H
+  IZQ
+  DCH
+  TRS
+  OTRO
 }
 
 model User {
-    id            String         @id @default(uuid())
-    email         String         @unique
-    name          String
-    lastName      String
-    password      String
-    role          Role           @default(EMPLOYEE)
-    createdAt     DateTime       @default(now())
-    updatedAt     DateTime       @updatedAt
-    appointments  Date[]
-    lastPasswords LastPassword[]
+  id                     String         @id @default(uuid())
+  email                  String         @unique
+  name                   String
+  lastName               String
+  password               String
+  role                   Role           @default(EMPLOYEE)
+  passwordResetTokenHash String?        @unique
+  passwordResetExpiresAt DateTime?
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
+  appointments           Date[]
+  lastPasswords          LastPassword[]
+  sessions               Session[]
+  practitioner           Practitioner?
+}
+
+model Clinic {
+  id                String        @id @default("default")
+  name              String        @default("Centro de Osteopatía TECA")
+  timeZone          String        @default("Europe/Madrid")
+  allowOutsideHours Boolean       @default(false)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  hours             ClinicHours[]
+}
+
+model ClinicHours {
+  id          String  @id @default(uuid())
+  clinicId    String
+  weekday     Int
+  enabled     Boolean @default(true)
+  firstStart  String?
+  firstEnd    String?
+  secondStart String?
+  secondEnd   String?
+  clinic      Clinic  @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  @@unique([clinicId, weekday])
+  @@index([clinicId])
+}
+
+model Practitioner {
+  id           String             @id @default(uuid())
+  userId       String?            @unique
+  name         String
+  lastName     String?
+  email        String?
+  color        String             @default("#047857")
+  status       PractitionerStatus @default(SCHEDULE_ONLY)
+  active       Boolean            @default(true)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  user         User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  appointments Date[]
+
+  @@index([active, name])
+}
+
+model Session {
+  id         String   @id @default(uuid())
+  userId     String
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model LastPassword {
-    id       String @id @unique @default(uuid())
-    userId   String
-    password String
-    user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id       String @id @unique @default(uuid())
+  userId   String
+  password String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Customer {
-    id                     String                  @id @unique @default(uuid())
-    fullName               String?
-    age                    Int?
-    weight                 Int?
-    height                 Int?
-    profession             String?
-    province               Province?
-    population             String?
-    cD                     Int?
-    address                String?
-    emailAddress           String?
-    children               Int?
-    observationChildren    String?
-    dateBirth              DateTime?
-    preferredCommunication PreferredCommunication? @default(SMS)
-    docs                   Doc[]
-    appointments           Date[]
-    phones                 PhoneNumber[]
+  id                     String                  @id @unique @default(uuid())
+  customerNumber         Int                     @unique @default(autoincrement())
+  fullName               String?
+  age                    Int?
+  weight                 Int?
+  height                 Int?
+  profession             String?
+  province               Province?
+  population             String?
+  cD                     Int?
+  address                String?
+  emailAddress           String?
+  children               Int?
+  observationChildren    String?
+  dateBirth              DateTime?
+  preferredCommunication PreferredCommunication? @default(SMS)
+  docs                   Doc[]
+  appointments           Date[]
+  phones                 PhoneNumber[]
+  legacyFolderName       String?
+  legacySourceRow        Int?                    @unique
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
 }
 
 model Date {
-    id              String      @id @unique @default(uuid())
-    citaDate        DateTime
-    userId          String
-    customerId      String
-    advance_date    DateAdvance @default(FALSE)
-    urgent_date     Boolean?
-    time            Int
-    dateObservation String?
-    sessionPrice    Int?
-    user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-    customer        Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
-    Ficha           Ficha[]
+  id              String        @id @unique @default(uuid())
+  citaDate        DateTime
+  userId          String
+  practitionerId  String?
+  customerId      String
+  advance_date    DateAdvance   @default(FALSE)
+  urgent_date     Boolean?
+  time            Int
+  dateObservation String?
+  sessionPrice    Int?
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  practitioner    Practitioner? @relation(fields: [practitionerId], references: [id], onDelete: SetNull)
+  customer        Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  Ficha           Ficha[]
+
+  @@index([practitionerId, citaDate])
+  @@index([userId, citaDate])
 }
 
 model PhoneNumber {
-    id                   String   @id @unique @default(uuid())
-    customerId           String
-    countryCode          String   @default("+34")
-    phoneNumber          BigInt
-    isCommunicationPhone Boolean  @default(false)
-    customer             Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  id                   String    @id @unique @default(uuid())
+  customerId           String
+  countryCode          String    @default("+34")
+  phoneNumber          BigInt?
+  kind                 PhoneKind @default(OTHER)
+  label                String?
+  rawValue             String?
+  isCommunicationPhone Boolean   @default(false)
+  customer             Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 }
 
 model Doc {
-    id         String       @id @unique @default(uuid())
-    typeDoc    FileType
-    fixedType  FixedDocType
-    customerId String
-    file       String?
-    fileName   String?
-    customer   Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
-    Fichas     Ficha[]
+  id             String            @id @unique @default(uuid())
+  typeDoc        FileType
+  fixedType      FixedDocType?
+  customerId     String
+  file           String?
+  fileName       String?
+  originalName   String?
+  storageKey     String?           @unique
+  mimeType       String?
+  sizeBytes      Int?
+  checksumSha256 String?
+  status         DocumentStatus    @default(ACTIVE)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  customer       Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  Fichas         Ficha[]
+  versions       DocumentVersion[]
+
+  @@index([customerId, createdAt])
+}
+
+model DocumentVersion {
+  id             String   @id @default(uuid())
+  docId          String
+  version        Int
+  storageKey     String   @unique
+  originalName   String
+  mimeType       String?
+  sizeBytes      Int
+  checksumSha256 String
+  createdById    String?
+  createdAt      DateTime @default(now())
+  doc            Doc      @relation(fields: [docId], references: [id], onDelete: Cascade)
+
+  @@unique([docId, version])
+  @@index([docId, createdAt])
 }
 
 model Ficha {
-    id              String               @id @unique @default(uuid())
-    dateFichaId     String?
-    docId           String
-    observations    String?
-    treatmentPlan   String?
-    bodyAssessments BodyPartAssessment[]
-    doc             Doc                  @relation(fields: [docId], references: [id], onDelete: Cascade)
-    date            Date?                 @relation(fields: [dateFichaId], references: [id], onDelete: Cascade)
+  id              String               @id @unique @default(uuid())
+  dateFichaId     String?
+  docId           String
+  observations    String?
+  treatmentPlan   String?
+  bodyAssessments BodyPartAssessment[]
+  doc             Doc                  @relation(fields: [docId], references: [id], onDelete: Cascade)
+  date            Date?                @relation(fields: [dateFichaId], references: [id], onDelete: Cascade)
 }
 
 model BodyPartAssessment {
-    id          String      @id @unique @default(uuid())
-    fichaId     String
-    bodyPart    BodyPart
-    subBodyPart SubBodyPart
-    description String
-    ficha       Ficha       @relation(fields: [fichaId], references: [id], onDelete: Cascade)
+  id          String      @id @unique @default(uuid())
+  fichaId     String
+  bodyPart    BodyPart
+  subBodyPart SubBodyPart
+  description String
+  ficha       Ficha       @relation(fields: [fichaId], references: [id], onDelete: Cascade)
 }

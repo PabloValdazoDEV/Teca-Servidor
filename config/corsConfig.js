@@ -1,30 +1,23 @@
-const allowedOrigins = [
-    "https://teca.pablovaldazo.es",
-    "http://localhost:5173",
-  ];
-  
-  // Aplicar configuración de Cookies
-  const corsConfig = {
-    origin: function (origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
-    },
-    methods: "GET, POST, PUT, DELETE, OPTIONS",
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "x-api-key",
-      "Accept",
-      "Origin",
-      "User-Agent"
-    ], 
-    credentials: true,
-    preflightContinue: false,
-    optionsSuccessStatus: 204, 
-  };
-  
-  module.exports = corsConfig;
+const { isAllowedOrigin } = require("./security");
+
+const corsConfig = {
+  origin(origin, callback) {
+    // Requests without Origin are not browser CORS requests. Authentication still
+    // applies to them; CORS must never be used as an authorization mechanism.
+    if (!origin || isAllowedOrigin(origin)) {
+      return callback(null, true);
+    }
+
+    const error = new Error("Origin not allowed by CORS policy");
+    error.code = "CORS_NOT_ALLOWED";
+    return callback(error);
+  },
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Accept", "Authorization", "Content-Type"],
+  credentials: true,
+  maxAge: 600,
+  optionsSuccessStatus: 204,
+};
+
+module.exports = corsConfig;
   

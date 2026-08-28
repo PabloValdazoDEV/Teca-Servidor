@@ -3,63 +3,50 @@ const router = express.Router();
 const authMiddleware = require("../middelwares/authMiddleware");
 const prisma = require("../prisma/prisma");
 const { DateTime } = require("luxon");
+const {
+  CustomerValidationError,
+  normalizeCustomerInput,
+} = require("../utils/customerValidation");
+const { materializePatientTemplates } = require("../services/documentStorage");
 
-router.post("/create", authMiddleware, async (req, res) => {
-  console.log(req.body);
-  const {
-    fullName,
-    age,
-    weight,
-    height,
-    PhoneNumber,
-    profession,
-    province,
-    population,
-    cD,
-    address,
-    emailAddress,
-    children,
-    observationChildren,
-    dateBirth,
-    preferredCommunication,
-  } = req.body;
+router.use(authMiddleware);
 
-  const date = DateTime.fromISO(dateBirth, { zone: "Europe/Madrid" }).toJSDate();
+router.post("/create", async (req, res) => {
   try {
-    await prisma.customer.create({
-        data: {
-            fullName,
-            age,
-            weight: +weight,
-            height: +height,
-            profession,
-            province,
-            population,
-            cD: +cD,
-            address,
-            emailAddress,
-            children: +children,
-            observationChildren,
-            dateBirth: date,
-            preferredCommunication,
-            phones: {
-              createMany: {
-                data: PhoneNumber.map((phone) => ({
-                  countryCode: phone.countryCode,
-                  phoneNumber: BigInt(phone.phoneNumber),
-                  isCommunicationPhone: phone.isCommunicationPhone || false,
-                })),
-              },
-            },
-          },
+    const { customer, phones } = normalizeCustomerInput(req.body);
+    const createdCustomer = await prisma.customer.create({
+      data: {
+        ...customer,
+        ...(phones.length
+          ? { phones: { createMany: { data: phones } } }
+          : {}),
+      },
     });
+
+    let templatesCreated = 0;
+    try {
+      const templates = await materializePatientTemplates({
+        prisma,
+        customerId: createdCustomer.id,
+        createdById: req.user.id,
+      });
+      templatesCreated = templates.length;
+    } catch (templateError) {
+      console.error("Patient templates could not be materialized", templateError);
+    }
+
+    return res.status(201).json({ customer: createdCustomer, templatesCreated });
   } catch (error) {
+    if (error instanceof CustomerValidationError) {
+      return res.status(400).json({ message: error.message });
+    }
+
     console.error(error);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
-router.get("/all", authMiddleware, async (req, res) => {
+router.get("/all", async (req, res) => {
   const { page = 1, name, phone } = req.query;
   const salto = 10 * (page - 1);
 
@@ -91,7 +78,7 @@ router.get("/all", authMiddleware, async (req, res) => {
         ...customer,
         phones: customer.phones.map((phone) => ({
           ...phone,
-          phoneNumber: phone.phoneNumber.toString(), 
+          phoneNumber: phone.phoneNumber?.toString() || null,
         })),
       }));
   
@@ -102,7 +89,7 @@ router.get("/all", authMiddleware, async (req, res) => {
   }
 });
 
-router.get("/edit/:id", authMiddleware, async (req, res) => {
+router.get("/edit/:id", async (req, res) => {
   const { id } = req.params;
   try {
     const response = await prisma.customer.findUnique({
@@ -121,7 +108,7 @@ router.get("/edit/:id", authMiddleware, async (req, res) => {
         ...response,
         phones: response.phones.map((phone) => ({
           ...phone,
-          phoneNumber: phone.phoneNumber.toString(), 
+          phoneNumber: phone.phoneNumber?.toString() || null,
         })),
       };
   
@@ -132,76 +119,84 @@ router.get("/edit/:id", authMiddleware, async (req, res) => {
   }
 });
 
-router.put("/edit", authMiddleware, async (req, res)=>{
-    const {
-        id,
-        fullName,
-        age,
-        PhoneNumber,
-        weight,
-        height,
-        profession,
-        province,
-        population,
-        cD,
-        address,
-        emailAddress,
-        children,
-        observationChildren,
-        dateBirth,
-        preferredCommunication,
-      } = req.body;
+router.get("/detail/:id", async (req, res) => {
+  try {
+    const customer = await prisma.customer.findUnique({
+      where: { id: req.params.id },
+      include: {
+        phones: true,
+        docs: {
+          where: { status: "ACTIVE" },
+          include: { versions: { orderBy: { version: "desc" } } },
+          orderBy: { createdAt: "asc" },
+        },
+        appointments: {
+          include: {
+            practitioner: { select: { id: true, name: true, lastName: true, color: true } },
+            user: { select: { id: true, name: true, lastName: true } },
+          },
+          orderBy: { citaDate: "desc" },
+          take: 20,
+        },
+      },
+    });
 
-      const date = DateTime.fromISO(dateBirth, { zone: "Europe/Madrid" }).toJSDate();
+    if (!customer) {
+      return res.status(404).json({ message: "Cliente no encontrado" });
+    }
+
+    return res.json({
+      customer: {
+        ...customer,
+        phones: customer.phones.map((phone) => ({
+          ...phone,
+          phoneNumber: phone.phoneNumber?.toString() || null,
+        })),
+      },
+    });
+  } catch (error) {
+    console.error("Customer detail could not be loaded", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.put("/edit", async (req, res)=>{
     try {
-        const response = await prisma.customer.update({
-            where:{
-                id
-            },
-            data: {
-                fullName,
-                age,
-                weight: +weight,
-                height: +height,
-                profession,
-                province,
-                population,
-                cD: +cD,
-                address,
-                emailAddress,
-                children: +children,
-                observationChildren,
-                dateBirth: date,
-                preferredCommunication,
-              },
-        })
+        const id = typeof req.body.id === "string" ? req.body.id : "";
+        if (!id) {
+          return res.status(400).json({ message: "El cliente no es válido" });
+        }
 
-        await prisma.phoneNumber.deleteMany({
-            where: {
-              customerId: id,
-            },
+        const { customer, phones } = normalizeCustomerInput(req.body);
+        const updatedCustomer = await prisma.$transaction(async (transaction) => {
+          const updated = await transaction.customer.update({
+            where: { id },
+            data: customer,
           });
-      
-          if (PhoneNumber.length > 0) {
-            await prisma.phoneNumber.createMany({
-              data: PhoneNumber.map((phone) => ({
-                customerId: id,
-                phoneNumber: BigInt(phone.phoneNumber),
-                countryCode: phone.countryCode,
-                isCommunicationPhone: phone.isCommunicationPhone || false,
-              })),
+
+          await transaction.phoneNumber.deleteMany({ where: { customerId: id } });
+          if (phones.length) {
+            await transaction.phoneNumber.createMany({
+              data: phones.map((phone) => ({ ...phone, customerId: id })),
             });
           }
-        
+
+          return updated;
+        });
+
+        return res.json({ customer: updatedCustomer });
     } catch (error) {
+        if (error instanceof CustomerValidationError) {
+          return res.status(400).json({ message: error.message });
+        }
+
         console.error(error);
-        res.status(500).json({ message: "Server error" });
+        return res.status(500).json({ message: "Server error" });
     }
 })
 
-router.get("/delete/:id", authMiddleware, async (req, res) => {
+router.get("/delete/:id", async (req, res) => {
     const { id } = req.params;
-    console.log("Get Delete", id);
     try {
         const response = await prisma.date.findMany({
             where: {
@@ -221,9 +216,8 @@ router.get("/delete/:id", authMiddleware, async (req, res) => {
     }
 });
 
-router.delete("/delete/:id", authMiddleware, async (req, res) =>{
+router.delete("/delete/:id", async (req, res) =>{
     const { id } = req.params
-    console.log(id)
     try {
         await prisma.customer.delete({
             where: {
@@ -231,10 +225,10 @@ router.delete("/delete/:id", authMiddleware, async (req, res) =>{
             }
           })
     
-        console.log("Cliente eliminado con éxito");
+        return res.status(204).send();
       } catch (error) {
         console.error("Error al eliminar el cliente:", error);
-        throw new Error("Error eliminando cliente");
+        return res.status(500).json({ message: "Server error" });
       }
 })
 
