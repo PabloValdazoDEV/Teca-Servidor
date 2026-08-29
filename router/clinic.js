@@ -32,8 +32,16 @@ router.get("/", async (req, res) => {
 
 router.put("/", requireRole("SUPERADMIN", "ADMIN"), async (req, res) => {
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+  const defaultHourlyRate = Number(req.body.defaultHourlyRate);
 
-  if (!name || name.length > 150 || typeof req.body.allowOutsideHours !== "boolean") {
+  if (
+    !name ||
+    name.length > 150 ||
+    typeof req.body.allowOutsideHours !== "boolean" ||
+    !Number.isInteger(defaultHourlyRate) ||
+    defaultHourlyRate < 0 ||
+    defaultHourlyRate > 10_000
+  ) {
     return res.status(400).json({ message: "La configuración de la clínica no es válida" });
   }
 
@@ -52,8 +60,9 @@ router.put("/", requireRole("SUPERADMIN", "ADMIN"), async (req, res) => {
           id: "default",
           name,
           allowOutsideHours: req.body.allowOutsideHours,
+          defaultHourlyRate,
         },
-        update: { name, allowOutsideHours: req.body.allowOutsideHours },
+        update: { name, allowOutsideHours: req.body.allowOutsideHours, defaultHourlyRate },
       });
 
       await Promise.all(

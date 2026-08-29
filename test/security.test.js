@@ -393,9 +393,112 @@ test("admins can edit employees but cannot promote them", async (t) => {
   assert.equal(updateData.role, "EMPLOYEE");
 });
 
+test("a failed practitioner email restores the agenda-only profile", async (t) => {
+  const originalUserFindUnique = prisma.user.findUnique;
+  const originalPractitionerFindUnique = prisma.practitioner.findUnique;
+  const originalTransaction = prisma.$transaction;
+  const originalSendMail = transporter.sendMail;
+  const originalConsoleError = console.error;
+  const admin = {
+    id: "invitation-admin",
+    email: "admin@example.com",
+    name: "Admin",
+    lastName: "User",
+    role: "ADMIN",
+  };
+  const practitioner = {
+    id: "agenda-practitioner",
+    userId: null,
+    name: "Agenda",
+    lastName: "Only",
+    email: "old-address@example.com",
+    status: "SCHEDULE_ONLY",
+  };
+  let invitationUpdate;
+  let rollbackUpdate;
+  let deletedUserWhere;
+  let transactionCount = 0;
+
+  prisma.user.findUnique = async () => admin;
+  prisma.practitioner.findUnique = async () => practitioner;
+  prisma.$transaction = async (callback) => {
+    transactionCount += 1;
+
+    if (transactionCount === 1) {
+      return callback({
+        user: {
+          create: async () => ({ id: "temporary-invited-user" }),
+        },
+        practitioner: {
+          update: async ({ data }) => {
+            invitationUpdate = data;
+          },
+        },
+      });
+    }
+
+    return callback({
+      practitioner: {
+        updateMany: async (input) => {
+          rollbackUpdate = input;
+          return { count: 1 };
+        },
+      },
+      user: {
+        deleteMany: async ({ where }) => {
+          deletedUserWhere = where;
+          return { count: 1 };
+        },
+      },
+    });
+  };
+  transporter.sendMail = async () => {
+    throw new Error("SMTP unavailable");
+  };
+  console.error = () => {};
+  t.after(() => {
+    prisma.user.findUnique = originalUserFindUnique;
+    prisma.practitioner.findUnique = originalPractitionerFindUnique;
+    prisma.$transaction = originalTransaction;
+    transporter.sendMail = originalSendMail;
+    console.error = originalConsoleError;
+  });
+
+  const token = jwt.sign({}, process.env.JWT_SECRET, {
+    algorithm: "HS256",
+    audience: "teca-web",
+    expiresIn: 900,
+    issuer: "teca-api",
+    subject: admin.id,
+  });
+
+  await request(app)
+    .post(`/practitioners/${practitioner.id}/invite`)
+    .set("Authorization", `Bearer ${token}`)
+    .send({ email: "new-address@example.com" })
+    .expect(500);
+
+  assert.deepEqual(invitationUpdate, {
+    userId: "temporary-invited-user",
+    email: "new-address@example.com",
+    status: "INVITED",
+  });
+  assert.deepEqual(rollbackUpdate.where, {
+    id: practitioner.id,
+    userId: "temporary-invited-user",
+  });
+  assert.deepEqual(rollbackUpdate.data, {
+    userId: null,
+    email: practitioner.email,
+    status: "SCHEDULE_ONLY",
+  });
+  assert.deepEqual(deletedUserWhere, { id: "temporary-invited-user" });
+});
+
 test("customer creation accepts a name without optional personal data", async (t) => {
   const originalUserFindUnique = prisma.user.findUnique;
   const originalCustomerCreate = prisma.customer.create;
+  const originalDocumentFindMany = prisma.doc.findMany;
   const currentUser = {
     id: "c7656d83-d128-44eb-9a10-b1f739e7e0c4",
     email: "employee@example.com",
@@ -417,9 +520,15 @@ test("customer creation accepts a name without optional personal data", async (t
     customerData = data;
     return { id: "new-customer", ...data };
   };
+  prisma.doc.findMany = async () => [
+    { fixedType: "FICHA" },
+    { fixedType: "VISCERAL_CRANEAL" },
+    { fixedType: "HISTORIAL_CLINICO" },
+  ];
   t.after(() => {
     prisma.user.findUnique = originalUserFindUnique;
     prisma.customer.create = originalCustomerCreate;
+    prisma.doc.findMany = originalDocumentFindMany;
   });
 
   const response = await request(app)
@@ -433,4 +542,70 @@ test("customer creation accepts a name without optional personal data", async (t
   assert.equal(customerData.dateBirth, null);
   assert.equal(customerData.emailAddress, null);
   assert.equal(customerData.phones, undefined);
+});
+
+test("customer detail returns the nearest future appointment independently of history", async (t) => {
+  const originalUserFindUnique = prisma.user.findUnique;
+  const originalCustomerFindUnique = prisma.customer.findUnique;
+  const originalDateFindFirst = prisma.date.findFirst;
+  const currentUser = {
+    id: "5278d4a6-d376-40e3-82fa-2a50c9145f04",
+    email: "employee@example.com",
+    name: "Current",
+    lastName: "Employee",
+    role: "EMPLOYEE",
+  };
+  const token = jwt.sign({}, process.env.JWT_SECRET, {
+    algorithm: "HS256",
+    audience: "teca-web",
+    expiresIn: 900,
+    issuer: "teca-api",
+    subject: currentUser.id,
+  });
+  const futureDate = new Date(Date.now() + 2 * 24 * 60 * 60 * 1_000);
+  let nextAppointmentQuery;
+
+  prisma.user.findUnique = async () => currentUser;
+  prisma.customer.findUnique = async () => ({
+    id: "customer-with-future-appointment",
+    customerNumber: 10,
+    fullName: "Paciente con cita",
+    phones: [],
+    docs: [],
+    appointments: [],
+  });
+  prisma.date.findFirst = async (query) => {
+    nextAppointmentQuery = query;
+    return {
+      id: "next-appointment",
+      customerId: "customer-with-future-appointment",
+      citaDate: futureDate,
+      time: 60,
+      practitioner: { id: "practitioner", name: "Pablo" },
+      user: null,
+    };
+  };
+  t.after(() => {
+    prisma.user.findUnique = originalUserFindUnique;
+    prisma.customer.findUnique = originalCustomerFindUnique;
+    prisma.date.findFirst = originalDateFindFirst;
+  });
+
+  const response = await request(app)
+    .get("/customers/detail/customer-with-future-appointment")
+    .set("Cookie", `teca_session=${token}`)
+    .expect(200);
+
+  assert.equal(response.body.nextAppointment.id, "next-appointment");
+  assert.equal(nextAppointmentQuery.where.customerId, "customer-with-future-appointment");
+  assert.ok(nextAppointmentQuery.where.citaDate.gte instanceof Date);
+  assert.deepEqual(nextAppointmentQuery.orderBy, { citaDate: "asc" });
+
+  prisma.date.findFirst = async () => null;
+  const responseWithoutFutureAppointment = await request(app)
+    .get("/customers/detail/customer-without-future-appointment")
+    .set("Cookie", `teca_session=${token}`)
+    .expect(200);
+
+  assert.equal(responseWithoutFutureAppointment.body.nextAppointment, null);
 });

@@ -1,14 +1,12 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { patientTemplatePath } = require("../config/legacyPaths");
 
 const storageRoot = path.resolve(
   process.env.DOCUMENT_STORAGE_PATH || path.join(__dirname, "..", "storage", "documents")
 );
-const templateRoot = path.resolve(
-  process.env.PATIENT_TEMPLATE_PATH ||
-    path.join(__dirname, "..", "..", "Ejemplos clientes", "Fichas Paciente")
-);
+const templateRoot = patientTemplatePath;
 
 const EXTENSION_TO_TYPE = new Map([
   [".doc", "DOC"],
@@ -264,4 +262,5 @@ module.exports = {
   resolveStorageKey,
   safeFileName,
   storageRoot,
+  templateRoot,
 };

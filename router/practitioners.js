@@ -95,11 +95,18 @@ router.post("/:id/invite", requireRole("SUPERADMIN", "ADMIN"), async (req, res) 
   }
 
   let createdUser;
+  let invitationContext;
   try {
     const practitioner = await prisma.practitioner.findUnique({ where: { id: req.params.id } });
     if (!practitioner || practitioner.userId) {
       return res.status(409).json({ message: "Este profesional ya tiene una cuenta vinculada" });
     }
+
+    invitationContext = {
+      practitionerId: practitioner.id,
+      previousEmail: practitioner.email,
+      previousStatus: practitioner.status,
+    };
 
     const resetToken = createOpaqueToken();
     const temporaryPassword = crypto.randomBytes(32).toString("hex");
@@ -133,8 +140,28 @@ router.post("/:id/invite", requireRole("SUPERADMIN", "ADMIN"), async (req, res) 
     });
     return res.status(201).json({ message: "Invitación enviada" });
   } catch (error) {
-    if (createdUser) {
-      await prisma.user.delete({ where: { id: createdUser.id } }).catch(() => {});
+    if (createdUser && invitationContext) {
+      try {
+        await prisma.$transaction(async (transaction) => {
+          const disconnected = await transaction.practitioner.updateMany({
+            where: {
+              id: invitationContext.practitionerId,
+              userId: createdUser.id,
+            },
+            data: {
+              userId: null,
+              email: invitationContext.previousEmail,
+              status: invitationContext.previousStatus,
+            },
+          });
+
+          if (disconnected.count === 1) {
+            await transaction.user.deleteMany({ where: { id: createdUser.id } });
+          }
+        });
+      } catch (rollbackError) {
+        console.error("Practitioner invitation rollback failed", rollbackError);
+      }
     }
     if (error.code === "P2002") {
       return res.status(409).json({ message: "Ya existe una cuenta con ese email" });

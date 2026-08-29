@@ -8,12 +8,21 @@ const {
   normalizeCustomerInput,
 } = require("../utils/customerValidation");
 const { materializePatientTemplates } = require("../services/documentStorage");
+const preferredCommunications = require("../config/preferredCommunications");
 
 router.use(authMiddleware);
 
 router.post("/create", async (req, res) => {
   try {
-    const { customer, phones } = normalizeCustomerInput(req.body);
+    const enabledPreferredCommunications = new Set(
+      preferredCommunications.getEnabledChannels()
+    );
+    const { customer, phones } = normalizeCustomerInput(req.body, {
+      enabledPreferredCommunications,
+      defaultPreferredCommunication: enabledPreferredCommunications.has("PHONE")
+        ? "PHONE"
+        : null,
+    });
     const createdCustomer = await prisma.customer.create({
       data: {
         ...customer,
@@ -47,45 +56,158 @@ router.post("/create", async (req, res) => {
 });
 
 router.get("/all", async (req, res) => {
-  const { page = 1, name, phone } = req.query;
-  const salto = 10 * (page - 1);
+  const requestedPage = Number.parseInt(req.query.page, 10);
+  const page = Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+  const offset = 10 * (page - 1);
+  const rawSearch = typeof req.query.q === "string" ? req.query.q : req.query.name;
+  const search = typeof rawSearch === "string" ? rawSearch.trim().slice(0, 100) : "";
+  const normalizedSearch = search
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+  const digits = search.replace(/\D/g, "");
 
   try {
-    const response = await prisma.customer.findMany({
-      where: {
-        AND: [
-          name
-            ? {
-                fullName: {
-                  contains: name,
-                  mode: "insensitive",
-                },
-              }
-            : {},
-        ],
-      },
-      include:{
-        phones: true
-      },
-      skip: salto,
-      take: 10,
-      orderBy: {
-        fullName: "asc",
-      },
-    });
+    let response;
+
+    if (search) {
+      const matches = await prisma.$queryRaw`
+        SELECT DISTINCT
+          customer."id",
+          customer."fullName"
+        FROM "Customer" customer
+        LEFT JOIN "PhoneNumber" phone ON phone."customerId" = customer."id"
+        WHERE strpos(
+                translate(lower(COALESCE(customer."fullName", '')), 'áéíóúüñ', 'aeiouun'),
+                ${normalizedSearch}
+              ) > 0
+           OR strpos(lower(COALESCE(customer."emailAddress", '')), lower(${search})) > 0
+           OR strpos(lower(COALESCE(phone."rawValue", '')), lower(${search})) > 0
+           OR (
+             ${digits.length >= 2}
+             AND strpos(
+               regexp_replace(
+                 COALESCE(phone."rawValue", '') || COALESCE(phone."countryCode", '') || COALESCE(phone."phoneNumber"::text, ''),
+                 '[^0-9]',
+                 '',
+                 'g'
+               ),
+               ${digits}
+             ) > 0
+           )
+        ORDER BY customer."fullName" ASC NULLS LAST
+        LIMIT 10
+        OFFSET ${offset}
+      `;
+      const orderedIds = matches.map((customer) => customer.id);
+      const customers = orderedIds.length
+        ? await prisma.customer.findMany({
+            where: { id: { in: orderedIds } },
+            include: { phones: true },
+          })
+        : [];
+      const customersById = new Map(customers.map((customer) => [customer.id, customer]));
+      response = orderedIds.map((id) => customersById.get(id)).filter(Boolean);
+    } else {
+      response = await prisma.customer.findMany({
+        include: { phones: true },
+        skip: offset,
+        take: 10,
+        orderBy: { fullName: "asc" },
+      });
+    }
 
     const sanitizedResponse = response.map((customer) => ({
+      ...customer,
+      phones: customer.phones.map((phone) => ({
+        ...phone,
+        phoneNumber: phone.phoneNumber?.toString() || null,
+      })),
+    }));
+
+    res.json(sanitizedResponse);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.get("/search", async (req, res) => {
+  const query = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 100) : "";
+  if (query.length < 2) {
+    return res.json({ customers: [] });
+  }
+
+  const normalizedQuery = query.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+  const digits = query.replace(/\D/g, "");
+  const customerNumberMatch = query.match(/^id[-\s]?0*(\d+)$/i);
+  const customerNumber = customerNumberMatch ? Number(customerNumberMatch[1]) : -1;
+
+  try {
+    const matches = await prisma.$queryRaw`
+      SELECT DISTINCT
+        customer."id",
+        customer."fullName",
+        customer."customerNumber"
+      FROM "Customer" customer
+      LEFT JOIN "PhoneNumber" phone ON phone."customerId" = customer."id"
+      WHERE strpos(
+              translate(lower(COALESCE(customer."fullName", '')), 'áéíóúüñ', 'aeiouun'),
+              ${normalizedQuery}
+            ) > 0
+         OR strpos(lower(COALESCE(phone."rawValue", '')), lower(${query})) > 0
+         OR (
+           ${digits.length >= 2}
+           AND strpos(
+             regexp_replace(
+               COALESCE(phone."rawValue", '') || COALESCE(phone."countryCode", '') || COALESCE(phone."phoneNumber"::text, ''),
+               '[^0-9]',
+               '',
+               'g'
+             ),
+             ${digits}
+           ) > 0
+         )
+         OR (${customerNumber >= 0} AND customer."customerNumber" = ${customerNumber})
+      ORDER BY customer."fullName" ASC NULLS LAST
+      LIMIT 12
+    `;
+
+    const customers = await prisma.customer.findMany({
+      where: { id: { in: matches.map((customer) => customer.id) } },
+      select: {
+        id: true,
+        customerNumber: true,
+        fullName: true,
+        phones: {
+          select: {
+            id: true,
+            countryCode: true,
+            phoneNumber: true,
+            kind: true,
+            label: true,
+            rawValue: true,
+            isCommunicationPhone: true,
+          },
+        },
+      },
+    });
+    const customersById = new Map(customers.map((customer) => [customer.id, customer]));
+    const orderedCustomers = matches
+      .map((match) => customersById.get(match.id))
+      .filter(Boolean)
+      .map((customer) => ({
         ...customer,
         phones: customer.phones.map((phone) => ({
           ...phone,
           phoneNumber: phone.phoneNumber?.toString() || null,
         })),
       }));
-  
-      res.json(sanitizedResponse);
+
+    return res.json({ customers: orderedCustomers });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
+    console.error("Customer search failed", error);
+    return res.status(500).json({ message: "No se ha podido buscar pacientes" });
   }
 });
 
@@ -121,25 +243,38 @@ router.get("/edit/:id", async (req, res) => {
 
 router.get("/detail/:id", async (req, res) => {
   try {
-    const customer = await prisma.customer.findUnique({
-      where: { id: req.params.id },
-      include: {
-        phones: true,
-        docs: {
-          where: { status: "ACTIVE" },
-          include: { versions: { orderBy: { version: "desc" } } },
-          orderBy: { createdAt: "asc" },
-        },
-        appointments: {
-          include: {
-            practitioner: { select: { id: true, name: true, lastName: true, color: true } },
-            user: { select: { id: true, name: true, lastName: true } },
+    const now = new Date();
+    const appointmentInclude = {
+      practitioner: { select: { id: true, name: true, lastName: true, color: true } },
+      user: { select: { id: true, name: true, lastName: true } },
+
+    };
+    const [customer, nextAppointment] = await Promise.all([
+      prisma.customer.findUnique({
+        where: { id: req.params.id },
+        include: {
+          phones: true,
+          docs: {
+            where: { status: "ACTIVE" },
+            include: { versions: { orderBy: { version: "desc" } } },
+            orderBy: { createdAt: "asc" },
           },
-          orderBy: { citaDate: "desc" },
-          take: 20,
+          appointments: {
+            include: appointmentInclude,
+            orderBy: { citaDate: "desc" },
+            take: 20,
+          },
         },
-      },
-    });
+      }),
+      prisma.date.findFirst({
+        where: {
+          customerId: req.params.id,
+          citaDate: { gte: now },
+        },
+        include: appointmentInclude,
+        orderBy: { citaDate: "asc" },
+      }),
+    ]);
 
     if (!customer) {
       return res.status(404).json({ message: "Cliente no encontrado" });
@@ -153,6 +288,7 @@ router.get("/detail/:id", async (req, res) => {
           phoneNumber: phone.phoneNumber?.toString() || null,
         })),
       },
+      nextAppointment,
     });
   } catch (error) {
     console.error("Customer detail could not be loaded", error);
@@ -167,7 +303,26 @@ router.put("/edit", async (req, res)=>{
           return res.status(400).json({ message: "El cliente no es válido" });
         }
 
-        const { customer, phones } = normalizeCustomerInput(req.body);
+        const existingCustomer = await prisma.customer.findUnique({
+          where: { id },
+          select: { preferredCommunication: true },
+        });
+        if (!existingCustomer) {
+          return res.status(404).json({ message: "Cliente no encontrado" });
+        }
+
+        const enabledPreferredCommunications = new Set(
+          preferredCommunications.getEnabledChannels()
+        );
+        if (existingCustomer.preferredCommunication) {
+          enabledPreferredCommunications.add(
+            existingCustomer.preferredCommunication
+          );
+        }
+
+        const { customer, phones } = normalizeCustomerInput(req.body, {
+          enabledPreferredCommunications,
+        });
         const updatedCustomer = await prisma.$transaction(async (transaction) => {
           const updated = await transaction.customer.update({
             where: { id },

@@ -24,10 +24,16 @@ CREATE TABLE IF NOT EXISTS "Clinic" (
     "name" TEXT NOT NULL DEFAULT 'Centro de Osteopatía TECA',
     "timeZone" TEXT NOT NULL DEFAULT 'Europe/Madrid',
     "allowOutsideHours" BOOLEAN NOT NULL DEFAULT false,
+    "defaultHourlyRate" INTEGER NOT NULL DEFAULT 0,
+    "lastBackupExportAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "Clinic_pkey" PRIMARY KEY ("id")
 );
+
+ALTER TABLE "Clinic"
+    ADD COLUMN IF NOT EXISTS "defaultHourlyRate" INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS "lastBackupExportAt" TIMESTAMP(3);
 
 CREATE TABLE IF NOT EXISTS "ClinicHours" (
     "id" TEXT NOT NULL,
@@ -55,11 +61,15 @@ CREATE TABLE IF NOT EXISTS "Practitioner" (
     CONSTRAINT "Practitioner_pkey" PRIMARY KEY ("id")
 );
 
-INSERT INTO "Clinic" ("id") VALUES ('default') ON CONFLICT ("id") DO NOTHING;
+INSERT INTO "Clinic" ("id", "createdAt", "updatedAt")
+VALUES ('default', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+ON CONFLICT ("id") DO NOTHING;
 
 INSERT INTO "ClinicHours" (
     "id", "clinicId", "weekday", "enabled", "firstStart", "firstEnd", "secondStart", "secondEnd"
-) VALUES
+)
+SELECT seed.*
+FROM (VALUES
     ('default-0', 'default', 0, false, NULL, NULL, NULL, NULL),
     ('default-1', 'default', 1, true, '10:00', '14:00', '16:00', '22:00'),
     ('default-2', 'default', 2, true, '10:00', '14:00', '16:00', '22:00'),
@@ -67,7 +77,13 @@ INSERT INTO "ClinicHours" (
     ('default-4', 'default', 4, true, '10:00', '14:00', '16:00', '22:00'),
     ('default-5', 'default', 5, true, '10:00', '16:00', NULL, NULL),
     ('default-6', 'default', 6, false, NULL, NULL, NULL, NULL)
-ON CONFLICT ("id") DO NOTHING;
+) AS seed("id", "clinicId", "weekday", "enabled", "firstStart", "firstEnd", "secondStart", "secondEnd")
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM "ClinicHours" existing
+    WHERE existing."id" = seed."id"
+       OR (existing."clinicId" = seed."clinicId" AND existing."weekday" = seed."weekday")
+);
 
 INSERT INTO "Practitioner" (
     "id", "userId", "name", "lastName", "email", "status", "active", "createdAt", "updatedAt"

@@ -7,6 +7,7 @@ const helmet = require("helmet");
 const { rateLimit } = require("express-rate-limit");
 const app = express();
 const PORT = process.env.PORT || 3000;
+const BIND_HOST = process.env.BIND_HOST || "127.0.0.1";
 const router = require("./router");
 const corsConfig = require("./config/corsConfig");
 const { isProduction } = require("./config/security");
@@ -103,8 +104,8 @@ app.use((error, req, res, next) => {
 });
 
 if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`El servidor está escuchando en el puerto ${PORT}`);
+  app.listen(PORT, BIND_HOST, () => {
+    console.log(`El servidor está escuchando en ${BIND_HOST}:${PORT}`);
   });
 }
 

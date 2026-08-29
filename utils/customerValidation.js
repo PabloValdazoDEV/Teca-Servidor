@@ -115,8 +115,17 @@ function normalizePhones(value) {
   let communicationPhoneFound = false;
   const phones = value.map((phone) => {
     const countryCode = String(phone?.countryCode ?? "+34").trim();
-    const phoneNumber = String(phone?.phoneNumber ?? "").replace(/[\s-]/g, "");
     const rawValue = optionalString(phone?.rawValue, "El texto original del teléfono", 500);
+    const explicitPhoneNumber = String(phone?.phoneNumber ?? "").replace(/[^0-9]/g, "");
+    let phoneNumber = explicitPhoneNumber;
+    if (!phoneNumber && rawValue) {
+      phoneNumber = rawValue.replace(/[^0-9]/g, "");
+      const countryDigits = countryCode.replace(/[^0-9]/g, "");
+      if (rawValue.trim().startsWith("+") && countryDigits && phoneNumber.startsWith(countryDigits)) {
+        phoneNumber = phoneNumber.slice(countryDigits.length);
+      }
+      if (!/^\d{6,15}$/.test(phoneNumber)) phoneNumber = "";
+    }
     const label = optionalString(phone?.label, "La etiqueta del teléfono", 100);
     const kind = optionalEnum(phone?.kind, "El tipo de teléfono", phoneKindValues) || "OTHER";
 
@@ -129,7 +138,7 @@ function normalizePhones(value) {
     }
 
     const isCommunicationPhone =
-      Boolean(phoneNumber) && phone?.isCommunicationPhone === true && !communicationPhoneFound;
+      Boolean(phoneNumber || rawValue) && phone?.isCommunicationPhone === true && !communicationPhoneFound;
     communicationPhoneFound ||= isCommunicationPhone;
 
     return {
@@ -142,21 +151,39 @@ function normalizePhones(value) {
     };
   });
 
-  if (phones.some((phone) => phone.phoneNumber) && !communicationPhoneFound) {
-    phones.find((phone) => phone.phoneNumber).isCommunicationPhone = true;
+  if (phones.length && !communicationPhoneFound) {
+    phones[0].isCommunicationPhone = true;
   }
 
   return phones;
 }
 
-function normalizeCustomerInput(input = {}) {
+function normalizeCustomerInput(input = {}, options = {}) {
   const phones = normalizePhones(input.PhoneNumber);
   const emailAddress = optionalEmail(input.emailAddress);
-  const preferredCommunication = optionalEnum(
+  let preferredCommunication = optionalEnum(
     input.preferredCommunication,
     "El medio de comunicación",
     preferredCommunicationValues
   );
+  if (!preferredCommunication && options.defaultPreferredCommunication) {
+    preferredCommunication = optionalEnum(
+      options.defaultPreferredCommunication,
+      "El medio de comunicación predeterminado",
+      preferredCommunicationValues
+    );
+  }
+  const enabledPreferredCommunications = options.enabledPreferredCommunications;
+
+  if (
+    preferredCommunication &&
+    enabledPreferredCommunications &&
+    !enabledPreferredCommunications.has(preferredCommunication)
+  ) {
+    throw new CustomerValidationError(
+      "El medio de comunicación seleccionado está desactivado"
+    );
+  }
 
   if (preferredCommunication === "EMAIL" && !emailAddress) {
     throw new CustomerValidationError(
@@ -164,7 +191,7 @@ function normalizeCustomerInput(input = {}) {
     );
   }
   if (
-    ["WHATSAPP", "SMS", "PHONE"].includes(preferredCommunication) &&
+    ["WHATSAPP", "SMS"].includes(preferredCommunication) &&
     !phones.some((phone) => phone.phoneNumber)
   ) {
     throw new CustomerValidationError(

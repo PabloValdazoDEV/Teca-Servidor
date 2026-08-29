@@ -126,8 +126,57 @@ function appointmentFitsSchedule({ start, durationMinutes, hours, timeZone = "Eu
   });
 }
 
+function appointmentFitsExtendedSchedule({
+  start,
+  durationMinutes,
+  hours,
+  timeZone = "Europe/Madrid",
+  marginMinutes = 60,
+}) {
+  const startDateTime = DateTime.isDateTime(start)
+    ? start.setZone(timeZone)
+    : DateTime.fromJSDate(start, { zone: timeZone });
+  const duration = Number(durationMinutes);
+  const margin = Number(marginMinutes);
+
+  if (
+    !startDateTime.isValid ||
+    !Number.isInteger(duration) ||
+    duration < 10 ||
+    duration > 480 ||
+    !Number.isInteger(margin) ||
+    margin < 0
+  ) {
+    return false;
+  }
+
+  const weekday = startDateTime.weekday % 7;
+  const schedule = hours.find((day) => day.weekday === weekday);
+  if (!schedule?.enabled) return false;
+
+  const intervals = [
+    [schedule.firstStart, schedule.firstEnd],
+    [schedule.secondStart, schedule.secondEnd],
+  ]
+    .map(([intervalStart, intervalEnd]) => [
+      timeToMinutes(intervalStart),
+      timeToMinutes(intervalEnd),
+    ])
+    .filter(([from, to]) => from !== null && to !== null);
+
+  if (!intervals.length) return false;
+
+  const allowedStart = Math.min(...intervals.map(([from]) => from)) - margin;
+  const allowedEnd = Math.max(...intervals.map(([, to]) => to)) + margin;
+  const appointmentStart = startDateTime.hour * 60 + startDateTime.minute;
+  const appointmentEnd = appointmentStart + duration;
+
+  return appointmentStart >= allowedStart && appointmentEnd <= allowedEnd;
+}
+
 module.exports = {
   DEFAULT_HOURS,
+  appointmentFitsExtendedSchedule,
   appointmentFitsSchedule,
   normalizeHours,
   timeToMinutes,

@@ -14,6 +14,7 @@ const corsConfig = {
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Accept", "Authorization", "Content-Type"],
+  exposedHeaders: ["X-TECA-Exported-At"],
   credentials: true,
   maxAge: 600,
   optionsSuccessStatus: 204,

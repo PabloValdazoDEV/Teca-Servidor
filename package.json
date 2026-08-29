@@ -11,7 +11,8 @@
     "deploy": "npm ci --include=dev && prisma generate && npm prune --omit=dev",
     "db": "prisma db push",
     "import:plan": "node scripts/importLegacyPatients.js",
-    "import:apply": "node scripts/importLegacyPatients.js --apply"
+    "import:apply": "node scripts/importLegacyPatients.js --apply",
+    "customers:delete-all": "node scripts/deleteAllCustomers.js"
   },
   "keywords": [],
   "author": "",

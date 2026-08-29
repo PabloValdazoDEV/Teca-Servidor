@@ -6,14 +6,22 @@ const authMiddleware = require("../middelwares/authMiddleware");
 const prisma = require("../prisma/prisma");
 const sendSms = require("../config/sendSms");
 const transporter = require("../config/nodemail");
+const appointmentCommunications = require("../config/appointmentCommunications");
+const preferredCommunications = require("../config/preferredCommunications");
 const {
   buildAppointmentCreatedEmail,
   buildAppointmentRescheduledEmail,
 } = require("../services/appointmentEmail");
+const {
+  buildAppointmentCreatedSms,
+  buildAppointmentRescheduledSms,
+  deliverAppointmentSms,
+} = require("../services/appointmentSms");
 const { DateTime } = require("luxon");
 const { rateLimit } = require("express-rate-limit");
 const {
   DEFAULT_HOURS,
+  appointmentFitsExtendedSchedule,
   appointmentFitsSchedule,
 } = require("../services/clinicSchedule");
 
@@ -84,6 +92,13 @@ function practitionerWhere(practitionerId, userId) {
 router.post("/sendCommunication", communicationLimiter, async (req, res) => {
   const { to, message } = req.body;
 
+  if (!sendSms.isEnabled()) {
+    return res.status(503).json({
+      success: false,
+      message: "Los envíos mediante Twilio están desactivados",
+    });
+  }
+
   if (
     typeof to !== "string" ||
     !/^\+[1-9]\d{7,14}$/.test(to) ||
@@ -116,7 +131,6 @@ router.post("/dateCreate", async (req, res) => {
     dateObservation,
     dateAdvance,
     customerId,
-    message,
     urgent_date,
     sessionPrice,
   } = req.body;
@@ -133,7 +147,7 @@ router.post("/dateCreate", async (req, res) => {
     return res.status(400).json({ message: "Fecha inválida o malformateada" });
   }
   const startDateTime = parsedDate.startOf("minute").toJSDate();
-  
+  const isPastAppointment = !appointmentCommunications.shouldSendFor(startDateTime);
   const endDateTime = new Date(startDateTime.getTime() + timeN * 60000);
 
   if (isNaN(startDateTime.getTime())) {
@@ -161,16 +175,25 @@ router.post("/dateCreate", async (req, res) => {
     if (!customeDate) {
       return res.status(404).json({ message: "Cliente no encontrado" });
     }
-    if (
-      !clinic.allowOutsideHours &&
-      !appointmentFitsSchedule({
+    const fitsAllowedSchedule = clinic.allowOutsideHours
+      ? appointmentFitsExtendedSchedule({
+          start: parsedDate,
+          durationMinutes: timeN,
+          hours: clinic.hours,
+          timeZone: clinic.timeZone,
+        })
+      : appointmentFitsSchedule({
         start: parsedDate,
         durationMinutes: timeN,
         hours: clinic.hours,
         timeZone: clinic.timeZone,
-      })
-    ) {
-      return res.status(400).json({ message: "La cita queda fuera del horario de la clínica" });
+      });
+    if (!fitsAllowedSchedule) {
+      return res.status(400).json({
+        message: clinic.allowOutsideHours
+          ? "La cita queda fuera del margen permitido de una hora"
+          : "La cita queda fuera del horario de la clínica",
+      });
     }
     // Verificamos citas anteriores que podrían superponerse
     const previousAppointment = await prisma.date.findFirst({
@@ -228,8 +251,13 @@ router.post("/dateCreate", async (req, res) => {
     });
 
     console.log("Cita creada");
-
-    if (customeDate.preferredCommunication === "EMAIL" && customeDate.emailAddress) {
+    if (
+      !isPastAppointment &&
+      appointmentCommunications.isEnabled() &&
+      preferredCommunications.isEnabled("EMAIL") &&
+      customeDate.preferredCommunication === "EMAIL" &&
+      customeDate.emailAddress
+    ) {
       const email = buildAppointmentCreatedEmail({
         customerName: customeDate.fullName,
         startDate: startDateTime,
@@ -244,17 +272,24 @@ router.post("/dateCreate", async (req, res) => {
       transporter.sendMail(mailOptions).catch(() => {
         console.error("Email delivery failed");
       });
-    } else{
-      const phone = customeDate.phones
-        .filter(
-          (phone) => phone.isCommunicationPhone === true && phone.phoneNumber
-        )
-        .map((phone) => `${phone.countryCode} ${phone.phoneNumber}`)
-        .join(" ");
-      // await sendSms(phone, message);
+    } else if (
+      !isPastAppointment &&
+      appointmentCommunications.isEnabled() &&
+      preferredCommunications.isEnabled("SMS") &&
+      customeDate.preferredCommunication === "SMS"
+    ) {
+      const sms = buildAppointmentCreatedSms({
+        customerName: customeDate.fullName,
+        startDate: startDateTime,
+      });
+      await deliverAppointmentSms({ customer: customeDate, message: sms });
     }
 
-    res.json({ Status: "Cita creada correctamente" });
+    res.json({
+      Status: "Cita creada correctamente",
+      communicationSkipped: isPastAppointment,
+      communicationSkippedReason: isPastAppointment ? "PAST_APPOINTMENT" : null,
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error" });
@@ -417,8 +452,6 @@ router.put("/update", async (req, res) => {
     userId,
     time,
     dateAdvance,
-    message,
-    customer,
     dateObservation,
     customerId,
     urgent_date,
@@ -438,6 +471,7 @@ router.put("/update", async (req, res) => {
     return res.status(400).json({ message: "Fecha inválida o malformateada" });
   }
   const startDateTime = parsedDate.startOf("minute").toJSDate();
+  const isPastAppointment = !appointmentCommunications.shouldSendFor(startDateTime);
   const endDateTime = new Date(startDateTime.getTime() + timeN * 60000);
 
   if (isNaN(startDateTime.getTime())) {
@@ -464,16 +498,25 @@ router.put("/update", async (req, res) => {
     if (!customeDate) {
       return res.status(404).json({ message: "Cliente no encontrado" });
     }
-    if (
-      !clinic.allowOutsideHours &&
-      !appointmentFitsSchedule({
+    const fitsAllowedSchedule = clinic.allowOutsideHours
+      ? appointmentFitsExtendedSchedule({
+          start: parsedDate,
+          durationMinutes: timeN,
+          hours: clinic.hours,
+          timeZone: clinic.timeZone,
+        })
+      : appointmentFitsSchedule({
         start: parsedDate,
         durationMinutes: timeN,
         hours: clinic.hours,
         timeZone: clinic.timeZone,
-      })
-    ) {
-      return res.status(400).json({ message: "La cita queda fuera del horario de la clínica" });
+      });
+    if (!fitsAllowedSchedule) {
+      return res.status(400).json({
+        message: clinic.allowOutsideHours
+          ? "La cita queda fuera del margen permitido de una hora"
+          : "La cita queda fuera del horario de la clínica",
+      });
     }
 
     // Verificar superposición con citas anteriores
@@ -544,9 +587,14 @@ router.put("/update", async (req, res) => {
       },
     });
     console.log("Cita editada correctamente");
-
     if (fechaActual.citaDate.getTime() !== startDateTime.getTime()) {
-      if (customeDate.preferredCommunication === "EMAIL" && customeDate.emailAddress) {
+      if (
+        !isPastAppointment &&
+        appointmentCommunications.isEnabled() &&
+        preferredCommunications.isEnabled("EMAIL") &&
+        customeDate.preferredCommunication === "EMAIL" &&
+        customeDate.emailAddress
+      ) {
         const email = buildAppointmentRescheduledEmail({
           customerName: customeDate.fullName,
           previousDate: fechaActual.citaDate,
@@ -562,19 +610,25 @@ router.put("/update", async (req, res) => {
         transporter.sendMail(mailOptions).catch(() => {
           console.error("Email delivery failed");
         });
-      } else{
-        const phone = customeDate.phones
-          .filter(
-            (phone) => phone.isCommunicationPhone === true && phone.phoneNumber
-          )
-          .map((phone) => `${phone.countryCode} ${phone.phoneNumber}`)
-          .join(" ");
-
-        // await sendSms(phone, message);
+      } else if (
+        !isPastAppointment &&
+        appointmentCommunications.isEnabled() &&
+        preferredCommunications.isEnabled("SMS") &&
+        customeDate.preferredCommunication === "SMS"
+      ) {
+        const sms = buildAppointmentRescheduledSms({
+          customerName: customeDate.fullName,
+          startDate: startDateTime,
+        });
+        await deliverAppointmentSms({ customer: customeDate, message: sms });
       }
     }
 
-    res.json({ message: "Cita editada correctamente" });
+    res.json({
+      message: "Cita editada correctamente",
+      communicationSkipped: isPastAppointment,
+      communicationSkippedReason: isPastAppointment ? "PAST_APPOINTMENT" : null,
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error" });
