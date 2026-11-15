@@ -15,6 +15,7 @@ const {
   safeFileName,
   templateRoot,
 } = require("../services/documentStorage");
+const { logAccess } = require("../services/accessLog");
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -439,6 +440,39 @@ async function buildPatientsWorkbook(customers) {
   return workbook.xlsx.writeBuffer();
 }
 
+const BODY_PARTS = new Set(["PELVIS", "COLUMNA", "CLAVICULA", "RODILLA", "FS", "ES", "CERVICALES", "OTRA"]);
+const SUB_BODY_PARTS = new Set(["LFX", "I", "ILI", "F", "E", "RO", "H", "IZQ", "DCH", "TRS", "OTRO"]);
+
+class FichaValidationError extends Error {}
+
+function optionalText(value, maxLength) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || value.length > maxLength) {
+    throw new FichaValidationError("Texto de la ficha no válido");
+  }
+  return value;
+}
+
+// Solo se aceptan los campos conocidos: evita que el cliente asigne ids u otros
+// campos arbitrarios a las valoraciones.
+function normalizeFichaInput(body = {}) {
+  const assessments = body.bodyAssessments ?? [];
+  if (!Array.isArray(assessments) || assessments.length > 200) {
+    throw new FichaValidationError("Valoraciones no válidas");
+  }
+  return {
+    observations: optionalText(body.observations, 10_000),
+    treatmentPlan: optionalText(body.treatmentPlan, 10_000),
+    dateFichaId: optionalText(body.dateFichaId, 64),
+    bodyAssessments: assessments.map((item) => {
+      if (!BODY_PARTS.has(item?.bodyPart) || !SUB_BODY_PARTS.has(item?.subBodyPart) || typeof item?.description !== "string" || item.description.length > 2_000) {
+        throw new FichaValidationError("Valoración corporal no válida");
+      }
+      return { bodyPart: item.bodyPart, subBodyPart: item.subBodyPart, description: item.description };
+    }),
+  };
+}
+
 router.use(authMiddleware);
 
 router.post("/customer/:customerId/templates", async (req, res) => {
@@ -476,6 +510,7 @@ router.post("/customer/:customerId/upload", upload.single("file"), async (req, r
       createdById: req.user.id,
       file: req.file,
     });
+    logAccess(req, { action: "UPLOAD_DOCUMENT", customerId: customer.id, docId: document.id });
     return res.status(201).json({ message: "Documento guardado", document });
   } catch (error) {
     if (["UNSUPPORTED_FILE_TYPE", "FILE_SIGNATURE_MISMATCH"].includes(error.code)) {
@@ -503,6 +538,7 @@ router.post("/file/:docId/version", upload.single("file"), async (req, res) => {
       file: req.file,
       createdById: req.user.id,
     });
+    logAccess(req, { action: "EDIT_DOCUMENT", customerId: document.customerId, docId: document.id });
     return res.status(201).json({ message: "Nueva versión guardada", version });
   } catch (error) {
     if (["UNSUPPORTED_FILE_TYPE", "FILE_SIGNATURE_MISMATCH"].includes(error.code)) {
@@ -552,6 +588,11 @@ router.get("/file/:docId/content", async (req, res) => {
 
     const fileName = safeFileName(requestedVersion?.originalName || document.originalName || "documento");
     const disposition = req.query.download === "true" ? "attachment" : "inline";
+    logAccess(req, {
+      action: disposition === "attachment" ? "DOWNLOAD_DOCUMENT" : "VIEW_DOCUMENT",
+      customerId: document.customerId,
+      docId: document.id,
+    });
     return res.sendFile(resolveStorageKey(storageKey), {
       headers: {
         "Content-Disposition": `${disposition}; filename*=UTF-8''${encodeURIComponent(fileName)}`,
@@ -572,6 +613,7 @@ router.get("/export/all", authMiddleware.requireRole("SUPERADMIN", "ADMIN"), asy
   try {
     const { ZipArchive } = await import("archiver");
     const exportedAt = new Date();
+    logAccess(req, { action: "EXPORT_ALL" });
     const customers = await prisma.customer.findMany({
       include: {
         phones: true,
@@ -668,6 +710,9 @@ router.get("/ficha/:docId", async (req, res) => {
         customerId:true
       }
     })
+    if (!customerId) {
+      return res.status(404).json({ message: "Documento no encontrado" });
+    }
     const customer = await prisma.customer.findMany({
       where: {
         id: customerId.customerId
@@ -711,45 +756,28 @@ router.get("/ficha/:docId", async (req, res) => {
   }
 });
 
-router.post("/:customerId", async (req, res) => {
-  const { customerId } = req.params;
-  // const { typeDoc, fixedType } = req.body;
-  try {
-    await prisma.doc.create({
-      data: {
-        typeDoc: "OTRO",
-        fixedType: "FICHA",
-        customerId,
-      },
-    });
-    res.send("Documeto Creada")
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
 router.post("/ficha/:docId", async (req, res) => {
   // console.log(req.body)
   const { docId } = req.params;
   // console.log(docId)
-  const { observations, treatmentPlan, dateFichaId, bodyAssessments } = req.body;
   try {
+    const { bodyAssessments, ...ficha } = normalizeFichaInput(req.body);
+    const doc = await prisma.doc.findUnique({ where: { id: docId }, select: { id: true } });
+    if (!doc) {
+      return res.status(404).json({ message: "Documento no encontrado" });
+    }
     await prisma.ficha.create({
       data: {
-        docId: docId,
-        observations: observations,
-        treatmentPlan: treatmentPlan,
-        dateFichaId: dateFichaId,
-        bodyAssessments: {
-          createMany: {
-            data: bodyAssessments,
-          },
-        },
+        docId,
+        ...ficha,
+        bodyAssessments: { createMany: { data: bodyAssessments } },
       },
     });
     res.send("Ficha Creada")
   } catch (error) {
+    if (error instanceof FichaValidationError) {
+      return res.status(400).json({ message: error.message });
+    }
     console.error(error);
     res.status(500).json({ message: "Server error" });
   }
@@ -757,32 +785,28 @@ router.post("/ficha/:docId", async (req, res) => {
 
 router.put("/ficha/:fichaId", async (req, res) => {
   const { fichaId } = req.params;
-  const { observations, treatmentPlan, dateFichaId, bodyAssessments } = req.body;
-
-  // console.log(req.body)
   try {
-
-    await prisma.bodyPartAssessment.deleteMany({
-      where: { fichaId: fichaId }
-    });
-    
-
-    await prisma.ficha.update({
-      where: { id: fichaId },
-      data: {
-        observations: observations,
-        treatmentPlan: treatmentPlan,
-        dateFichaId: dateFichaId,
-        bodyAssessments: {
-          createMany: {
-            data: bodyAssessments,
-          },
+    const { bodyAssessments, ...ficha } = normalizeFichaInput(req.body);
+    // Borrado y recreación en una única transacción: si algo falla, la ficha
+    // conserva sus valoraciones anteriores.
+    await prisma.$transaction([
+      prisma.bodyPartAssessment.deleteMany({ where: { fichaId } }),
+      prisma.ficha.update({
+        where: { id: fichaId },
+        data: {
+          ...ficha,
+          bodyAssessments: { createMany: { data: bodyAssessments } },
         },
-      },
-    });
-    
+      }),
+    ]);
     res.send("ficha actualizada");
   } catch (error) {
+    if (error instanceof FichaValidationError) {
+      return res.status(400).json({ message: error.message });
+    }
+    if (error.code === "P2025") {
+      return res.status(404).json({ message: "Ficha no encontrada" });
+    }
     console.error(error);
     res.status(500).json({ message: "Server error" });
   }
@@ -818,27 +842,6 @@ router.delete("/:docId", async(req, res)=> {
     res.status(500).json({ message: "Server error" });
   }
 })
-
-router.get("/:customerId", async (req, res) => {
-  const { customerId } = req.params;
-  try {
-    const response = await prisma.doc.findMany({
-      where: {
-        customerId,
-        status: "ACTIVE",
-      },
-      include:{
-        customer: true,
-        versions: { orderBy: { version: "desc" } },
-      }
-    });
-    // console.log(response)
-    res.json(response);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
-  }
-});
 
 if (process.env.NODE_ENV === "test") {
   router._exportTestHelpers = {

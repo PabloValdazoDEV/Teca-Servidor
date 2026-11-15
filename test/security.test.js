@@ -36,7 +36,7 @@ test("disallowed origins are rejected", async () => {
 
 test("an allowed Origin never bypasses authentication", async () => {
   await request(app)
-    .get("/citas/calendario?trabajador=someone")
+    .get("/citas/createCalendar/someone")
     .set("Origin", allowedOrigin)
     .expect(401);
 });

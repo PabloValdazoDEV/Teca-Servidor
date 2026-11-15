@@ -89,8 +89,20 @@ No uses `prisma db push` en producción. Después de validar la copia y confirma
 npx prisma db execute --file prisma/security_schema_update.sql --schema prisma/schema.prisma
 npx prisma db execute --file prisma/clinic_documents_update.sql --schema prisma/schema.prisma
 npx prisma db execute --file prisma/clinic_pricing_backup_update.sql --schema prisma/schema.prisma
+npx prisma db execute --file prisma/customer_archive_update.sql --schema prisma/schema.prisma
+npx prisma db execute --file prisma/access_log_update.sql --schema prisma/schema.prisma
+npx prisma db execute --file prisma/user_access_update.sql --schema prisma/schema.prisma
 npx prisma migrate diff --from-schema-datasource prisma/schema.prisma --to-schema-datamodel prisma/schema.prisma --exit-code
 ```
+
+Tras aplicar los SQL, repara los teléfonos importados antes de esta versión (se guardaban solo como texto, sin prefijo ni número separados). Primero simula y revisa el informe que se genera en `migration-reports/`; después aplica:
+
+```sh
+npm run phones:plan
+npm run phones:apply
+```
+
+Los teléfonos que no se puedan interpretar (cifras de menos o de más) aparecen en el informe como `toReview` para corregirlos a mano en la ficha del paciente.
 
 No vuelvas a ejecutar `security_schema_update.sql` sobre una base ya actualizada. Si el último comando muestra diferencias, detén el despliegue y revísalas antes de arrancar la aplicación.
 
@@ -138,11 +150,28 @@ location ^~ /office/runtime/ {
         application/javascript js;
         application/wasm wasm;
         application/octet-stream data metadata;
+        application/json json;
     }
+    # Sirve las copias .gz que genera `npm run office:runtime` (≈80 MB en vez de ≈260 MB).
+    gzip_static on;
     try_files $uri =404;
     expires 30d;
 }
+
+# El manifiesto marca la versión del runtime: nunca debe quedarse en caché.
+location = /office/runtime/manifest.json {
+    default_type application/json;
+    add_header Cache-Control "no-cache" always;
+    try_files $uri =404;
+}
+
+location = /office/sw.js {
+    add_header Cache-Control "no-cache" always;
+    try_files $uri =404;
+}
 ```
+
+El editor guarda el runtime en el navegador (Cache Storage + service worker `/office/sw.js`): cada equipo lo descarga **una sola vez** por versión, y la app lo precarga en segundo plano tras iniciar sesión (no en móviles ni con ahorro de datos). Si se actualiza el runtime, ejecuta `npm run office:manifest` antes de compilar para regenerar `manifest.json` y las copias `.gz`; los navegadores detectarán la nueva versión solos.
 
 Para el enrutamiento SPA, configura una reescritura hacia `/index.html` solo cuando el archivo o directorio solicitado no exista. Con Apache detrás de Plesk, coloca esto en `httpdocs/.htaccess`:
 
@@ -167,6 +196,8 @@ curl -I https://teca.example.com/
 curl -I https://teca.example.com/office/runtime/soffice.wasm
 curl -I https://teca.example.com/api/system-status
 ```
+
+Comprueba también que `curl -sI -H 'Accept-Encoding: gzip' https://teca.example.com/office/runtime/soffice.wasm` devuelve `Content-Encoding: gzip`.
 
 El archivo `soffice.wasm` debe responder `200`, con `Content-Type: application/wasm`, `Cross-Origin-Opener-Policy: same-origin` y `Cross-Origin-Embedder-Policy: require-corp`. `/api/system-status` debe responder `401` sin sesión; tras iniciar sesión como administrador, la pantalla de estado debe confirmar base de datos, almacenamiento y correo.
 

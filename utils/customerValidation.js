@@ -1,3 +1,4 @@
+const { parsePhoneText } = require("./phone");
 const { PhoneKind, PreferredCommunication, Province } = require("@prisma/client");
 const { DateTime } = require("luxon");
 const { isValidEmail, normalizeEmail } = require("./accountValidation");
@@ -114,17 +115,18 @@ function normalizePhones(value) {
 
   let communicationPhoneFound = false;
   const phones = value.map((phone) => {
-    const countryCode = String(phone?.countryCode ?? "+34").trim();
+    let countryCode = String(phone?.countryCode ?? "+34").trim();
     const rawValue = optionalString(phone?.rawValue, "El texto original del teléfono", 500);
     const explicitPhoneNumber = String(phone?.phoneNumber ?? "").replace(/[^0-9]/g, "");
     let phoneNumber = explicitPhoneNumber;
+    // Sin número explícito se interpreta el texto: separa prefijo, número y nota,
+    // y respeta los prefijos extranjeros (antes todo se guardaba como +34).
     if (!phoneNumber && rawValue) {
-      phoneNumber = rawValue.replace(/[^0-9]/g, "");
-      const countryDigits = countryCode.replace(/[^0-9]/g, "");
-      if (rawValue.trim().startsWith("+") && countryDigits && phoneNumber.startsWith(countryDigits)) {
-        phoneNumber = phoneNumber.slice(countryDigits.length);
+      const [first] = parsePhoneText(rawValue).numbers;
+      if (first) {
+        countryCode = first.countryCode;
+        phoneNumber = first.phoneNumber;
       }
-      if (!/^\d{6,15}$/.test(phoneNumber)) phoneNumber = "";
     }
     const label = optionalString(phone?.label, "La etiqueta del teléfono", 100);
     const kind = optionalEnum(phone?.kind, "El tipo de teléfono", phoneKindValues) || "OTHER";

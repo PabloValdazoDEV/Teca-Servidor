@@ -10,6 +10,7 @@ const {
 } = require("../config/legacyPaths");
 const { createStoredDocument } = require("../services/documentStorage");
 const { buildLegacyMatchPlan } = require("../services/legacyMatching");
+const { parsePhoneText } = require("../utils/phone");
 
 function pathOption(name) {
   const prefix = `${name}=`;
@@ -94,6 +95,40 @@ function legacyProvince(value) {
   return normalized ? PROVINCES.get(normalized) || "OTRO" : null;
 }
 
+// Columnas C (teléfono) y D (móvil) del Excel antiguo: cada casilla puede traer
+// una nota ("/ MADRE") o dos números. Se separa prefijo y número para poder
+// llamar desde el móvil; lo que no se reconoce queda como texto y se informa.
+function legacyPhones(landlineValue, mobileValue) {
+  const phones = [];
+  const toReview = [];
+  [[landlineValue, "Teléfono", "LANDLINE"], [mobileValue, "Móvil", "MOBILE"]].forEach(([value, label, kind]) => {
+    const text = optionalText(value, 160);
+    if (!text) return;
+    const { numbers } = parsePhoneText(text);
+    if (!numbers.length) {
+      phones.push({ label, kind, rawValue: text, countryCode: "+34", phoneNumber: null, isCommunicationPhone: false });
+      toReview.push({ column: label, value: text });
+      return;
+    }
+    numbers.forEach((number, index) => {
+      phones.push({
+        label: index === 0 ? label : `${label} ${index + 1}`,
+        kind,
+        rawValue: text,
+        countryCode: number.countryCode,
+        phoneNumber: BigInt(number.phoneNumber),
+        isCommunicationPhone: false,
+      });
+    });
+  });
+  const preferred =
+    phones.find((phone) => phone.kind === "MOBILE" && phone.phoneNumber) ||
+    phones.find((phone) => phone.phoneNumber) ||
+    phones[0];
+  if (preferred) preferred.isCommunicationPhone = true;
+  return { phones, toReview };
+}
+
 function parseLegacyRows(sheet) {
   const rows = [];
   for (let rowNumber = 6; rowNumber <= sheet.rowCount; rowNumber += 1) {
@@ -102,10 +137,7 @@ function parseLegacyRows(sheet) {
     if (!fullName) continue;
     const dateBirthValue = cellValue(row.getCell(16));
     const dateBirth = dateBirthValue instanceof Date && !Number.isNaN(dateBirthValue.getTime()) ? dateBirthValue : null;
-    const phones = [cellValue(row.getCell(3)), cellValue(row.getCell(4))]
-      .map((value, index) => optionalText(value, 160) ? ({ label: index === 0 ? "Teléfono" : "Móvil", rawValue: optionalText(value, 160), kind: index === 0 ? "LANDLINE" : "MOBILE", isCommunicationPhone: index === 1 }) : null)
-      .filter(Boolean);
-    if (phones.length && !phones.some((phone) => phone.isCommunicationPhone)) phones[0].isCommunicationPhone = true;
+    const { phones, toReview: phonesToReview } = legacyPhones(cellValue(row.getCell(3)), cellValue(row.getCell(4)));
 
     rows.push({
       sourceRow: rowNumber,
@@ -123,6 +155,7 @@ function parseLegacyRows(sheet) {
       folderHint: legacyFolderHint(cellValue(row.getCell(15))),
       dateBirth,
       phones,
+      phonesToReview,
     });
   }
   return rows;
@@ -241,11 +274,14 @@ async function main() {
   const report = {
     generatedAt: new Date().toISOString(), mode: applyChanges ? "apply" : "dry-run",
     source: { workbookPath, attachmentsPath, patientRows: rows.length, folders: folders.length },
-    summary: { automaticMatches: plan.autoMatches.length, ambiguousNames: plan.ambiguous.length, unmatchedPatients: plan.unmatchedRows.length, unmatchedFolders: plan.unmatchedFolders.length },
+    summary: { phonesToReview: rows.reduce((total, row) => total + row.phonesToReview.length, 0), automaticMatches: plan.autoMatches.length, ambiguousNames: plan.ambiguous.length, unmatchedPatients: plan.unmatchedRows.length, unmatchedFolders: plan.unmatchedFolders.length },
     automaticMatches: plan.autoMatches.map((match) => ({ sourceRow: match.row.sourceRow, legacyId: match.row.legacyId, patient: match.row.fullName, folder: match.folder.name, strategy: match.strategy })),
     ambiguous: plan.ambiguous.map((item) => ({ normalizedName: item.key, rows: item.rows.map((row) => ({ sourceRow: row.sourceRow, fullName: row.fullName })), folders: item.folders.map((folder) => folder.name) })),
     unmatchedPatients: plan.unmatchedRows.map((row) => ({ sourceRow: row.sourceRow, fullName: row.fullName })),
     unmatchedFolders: plan.unmatchedFolders.map((folder) => folder.name),
+    // Teléfonos que no se han podido interpretar (cifras de menos o de más):
+    // se importan como texto y conviene corregirlos en la ficha.
+    phonesToReview: rows.flatMap((row) => row.phonesToReview.map((phone) => ({ sourceRow: row.sourceRow, legacyId: row.legacyId, patient: row.fullName, ...phone }))),
     import: { createdCustomers: 0, existingCustomers: 0, importedFiles: 0, skippedFiles: [], patientMappings: [] },
   };
 
@@ -295,4 +331,4 @@ if (require.main === module) {
   }).finally(() => prisma.$disconnect());
 }
 
-module.exports = { legacyHeight, optionalInteger, optionalNumber, parseLegacyRows };
+module.exports = { legacyHeight, legacyPhones, optionalInteger, optionalNumber, parseLegacyRows };

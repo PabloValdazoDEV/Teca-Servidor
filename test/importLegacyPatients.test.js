@@ -26,3 +26,25 @@ test("the visible legacy patient ID is read from Excel column J", () => {
   assert.equal(patient.sourceRow, 6);
   assert.equal(patient.legacyId, 248);
 });
+
+test("los teléfonos antiguos se separan en prefijo, número y nota", () => {
+  const { legacyPhones } = require("../scripts/importLegacyPatients");
+  const { phones, toReview } = legacyPhones("912345678", "600123123 / MADRE");
+  assert.deepEqual(phones.map((p) => [p.label, p.countryCode, String(p.phoneNumber), p.isCommunicationPhone]), [
+    ["Teléfono", "+34", "912345678", false],
+    ["Móvil", "+34", "600123123", true],
+  ]);
+  assert.equal(phones[1].rawValue, "600123123 / MADRE");
+  assert.equal(toReview.length, 0);
+});
+
+test("dos números en una casilla crean dos teléfonos y los dudosos se informan", () => {
+  const { legacyPhones } = require("../scripts/importLegacyPatients");
+  const { phones, toReview } = legacyPhones("60012312", "600123123- 611222333");
+  assert.deepEqual(phones.map((p) => [p.label, p.phoneNumber && String(p.phoneNumber)]), [
+    ["Teléfono", null],
+    ["Móvil", "600123123"],
+    ["Móvil 2", "611222333"],
+  ]);
+  assert.deepEqual(toReview, [{ column: "Teléfono", value: "60012312" }]);
+});

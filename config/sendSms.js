@@ -6,7 +6,12 @@ const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
 
 let client;
 
-const isEnabled = () => process.env.TWILIO_ENABLED === "true";
+// SMS desactivados de momento por decisión de la clínica: este interruptor manda
+// sobre TWILIO_ENABLED, así que ningún entorno puede enviarlos por error.
+// Para reactivarlos: pon SMS_TEMPORARILY_DISABLED a false y TWILIO_ENABLED=true.
+const SMS_TEMPORARILY_DISABLED = true;
+
+const isEnabled = () => !SMS_TEMPORARILY_DISABLED && process.env.TWILIO_ENABLED === "true";
 
 const getClient = () => {
   if (!accountSid || !authToken || !twilioPhoneNumber) {

@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const prisma = require("../prisma/prisma");
 const { rememberTtlSeconds } = require("../config/security");
+const { accountStatusSelect, isAccountDisabled } = require("../utils/accountStatus");
 
 const MAX_REMEMBERED_SESSIONS = 5;
 
@@ -67,12 +68,13 @@ async function rotateRememberedSession(token) {
           name: true,
           lastName: true,
           role: true,
+          ...accountStatusSelect,
         },
       },
     },
   });
 
-  if (!session || session.expiresAt <= new Date()) {
+  if (!session || session.expiresAt <= new Date() || isAccountDisabled(session.user)) {
     if (session) {
       await prisma.session.delete({ where: { id: session.id } }).catch(() => {});
     }

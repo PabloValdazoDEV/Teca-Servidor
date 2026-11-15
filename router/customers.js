@@ -9,8 +9,12 @@ const {
 } = require("../utils/customerValidation");
 const { materializePatientTemplates } = require("../services/documentStorage");
 const preferredCommunications = require("../config/preferredCommunications");
+const { logAccess } = require("../services/accessLog");
 
 router.use(authMiddleware);
+
+const { requireRole } = authMiddleware;
+const isAdminUser = (user) => ["SUPERADMIN", "ADMIN"].includes(user?.role);
 
 router.post("/create", async (req, res) => {
   try {
@@ -66,6 +70,11 @@ router.get("/all", async (req, res) => {
     .replace(/\p{Diacritic}/gu, "")
     .toLowerCase();
   const digits = search.replace(/\D/g, "");
+  const showArchived = req.query.archived === "true";
+
+  if (showArchived && !isAdminUser(req.user)) {
+    return res.status(403).json({ message: "Insufficient permissions" });
+  }
 
   try {
     let response;
@@ -77,7 +86,9 @@ router.get("/all", async (req, res) => {
           customer."fullName"
         FROM "Customer" customer
         LEFT JOIN "PhoneNumber" phone ON phone."customerId" = customer."id"
-        WHERE strpos(
+        WHERE (customer."archivedAt" IS NOT NULL) = ${showArchived}
+          AND (
+            strpos(
                 translate(lower(COALESCE(customer."fullName", '')), 'áéíóúüñ', 'aeiouun'),
                 ${normalizedSearch}
               ) > 0
@@ -95,6 +106,7 @@ router.get("/all", async (req, res) => {
                ${digits}
              ) > 0
            )
+          )
         ORDER BY customer."fullName" ASC NULLS LAST
         LIMIT 10
         OFFSET ${offset}
@@ -110,6 +122,7 @@ router.get("/all", async (req, res) => {
       response = orderedIds.map((id) => customersById.get(id)).filter(Boolean);
     } else {
       response = await prisma.customer.findMany({
+        where: { archivedAt: showArchived ? { not: null } : null },
         include: { phones: true },
         skip: offset,
         take: 10,
@@ -151,7 +164,9 @@ router.get("/search", async (req, res) => {
         customer."customerNumber"
       FROM "Customer" customer
       LEFT JOIN "PhoneNumber" phone ON phone."customerId" = customer."id"
-      WHERE strpos(
+      WHERE customer."archivedAt" IS NULL
+        AND (
+          strpos(
               translate(lower(COALESCE(customer."fullName", '')), 'áéíóúüñ', 'aeiouun'),
               ${normalizedQuery}
             ) > 0
@@ -169,6 +184,7 @@ router.get("/search", async (req, res) => {
            ) > 0
          )
          OR (${customerNumber >= 0} AND customer."customerNumber" = ${customerNumber})
+        )
       ORDER BY customer."fullName" ASC NULLS LAST
       LIMIT 12
     `;
@@ -280,6 +296,7 @@ router.get("/detail/:id", async (req, res) => {
       return res.status(404).json({ message: "Cliente no encontrado" });
     }
 
+    logAccess(req, { action: "VIEW_PATIENT", customerId: customer.id });
     return res.json({
       customer: {
         ...customer,
@@ -350,41 +367,99 @@ router.put("/edit", async (req, res)=>{
     }
 })
 
-router.get("/delete/:id", async (req, res) => {
-    const { id } = req.params;
-    try {
-        const response = await prisma.date.findMany({
-            where: {
-                customerId: id,
-                citaDate: {
-                  gte: DateTime.now().setZone("Europe/Madrid").toJSDate()
-                }
-            },
-            orderBy: {
-                citaDate: 'asc' 
-            }
-        });
-        res.json(response);
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Server error" });
-    }
+// Registro de accesos de un paciente (solo administración).
+router.get("/:id/access-log", requireRole("SUPERADMIN", "ADMIN"), async (req, res) => {
+  try {
+    const entries = await prisma.accessLog.findMany({
+      where: { customerId: req.params.id },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+    const userIds = [...new Set(entries.map((entry) => entry.userId).filter(Boolean))];
+    const users = userIds.length
+      ? await prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true, lastName: true } })
+      : [];
+    const names = new Map(users.map((user) => [user.id, `${user.name} ${user.lastName}`.trim()]));
+    return res.json({
+      entries: entries.map((entry) => ({
+        id: entry.id,
+        action: entry.action,
+        docId: entry.docId,
+        createdAt: entry.createdAt,
+        userName: names.get(entry.userId) || "Usuario eliminado",
+      })),
+    });
+  } catch (error) {
+    console.error("Access log could not be loaded", error);
+    return res.status(500).json({ message: "Server error" });
+  }
 });
 
-router.delete("/delete/:id", async (req, res) =>{
-    const { id } = req.params
-    try {
-        await prisma.customer.delete({
-            where: {
-              id: id
-            }
-          })
-    
-        return res.status(204).send();
-      } catch (error) {
-        console.error("Error al eliminar el cliente:", error);
-        return res.status(500).json({ message: "Server error" });
+// Los pacientes no se borran: la historia clínica debe conservarse. Archivar los
+// oculta del día a día (listados, buscador de citas) y se puede deshacer.
+router.post("/:id/archive", requireRole("SUPERADMIN", "ADMIN"), async (req, res) => {
+  const cancelFutureAppointments = req.body.cancelFutureAppointments === true;
+
+  try {
+    const customer = await prisma.customer.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, archivedAt: true },
+    });
+    if (!customer) {
+      return res.status(404).json({ message: "Cliente no encontrado" });
+    }
+    if (customer.archivedAt) {
+      return res.status(409).json({ message: "El paciente ya está archivado" });
+    }
+
+    const futureWhere = { customerId: customer.id, citaDate: { gte: new Date() } };
+    const futureAppointments = await prisma.date.count({ where: futureWhere });
+    if (futureAppointments > 0 && !cancelFutureAppointments) {
+      return res.status(409).json({
+        message: "El paciente tiene citas futuras",
+        code: "HAS_FUTURE_APPOINTMENTS",
+        futureAppointments,
+      });
+    }
+
+    const archived = await prisma.$transaction(async (transaction) => {
+      if (futureAppointments > 0) {
+        await transaction.date.deleteMany({ where: futureWhere });
       }
+      return transaction.customer.update({
+        where: { id: customer.id },
+        data: { archivedAt: new Date(), archivedById: req.user.id },
+        select: { id: true, archivedAt: true },
+      });
+    });
+
+    logAccess(req, { action: "ARCHIVE_PATIENT", customerId: customer.id });
+    return res.json({
+      message: "Paciente archivado",
+      customer: archived,
+      cancelledAppointments: futureAppointments,
+    });
+  } catch (error) {
+    console.error("Customer archive failed", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.post("/:id/restore", requireRole("SUPERADMIN", "ADMIN"), async (req, res) => {
+  try {
+    const result = await prisma.customer.updateMany({
+      where: { id: req.params.id, archivedAt: { not: null } },
+      data: { archivedAt: null, archivedById: null },
+    });
+    if (result.count !== 1) {
+      return res.status(404).json({ message: "Paciente archivado no encontrado" });
+    }
+    logAccess(req, { action: "RESTORE_PATIENT", customerId: req.params.id });
+    return res.json({ message: "Paciente restaurado" });
+  } catch (error) {
+    console.error("Customer restore failed", error);
+    return res.status(500).json({ message: "Server error" });
+  }
 })
 
 module.exports = router;

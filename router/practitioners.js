@@ -74,9 +74,23 @@ router.put("/:id", requireRole("SUPERADMIN", "ADMIN"), async (req, res) => {
   }
 
   try {
-    const practitioner = await prisma.practitioner.update({
+    const target = await prisma.practitioner.findUnique({
       where: { id: req.params.id },
-      data: { ...data, active: req.body.active, status: req.body.active ? undefined : "INACTIVE" },
+      select: { id: true, userId: true, status: true, active: true, user: { select: { role: true } } },
+    });
+    if (!target) {
+      return res.status(404).json({ message: "Profesional no encontrado" });
+    }
+
+    // Desactivar una agenda solo la oculta del calendario; el acceso a TECA de
+    // esa persona se gestiona en "Empleados".
+    let status;
+    if (!req.body.active) status = "INACTIVE";
+    else if (target.status === "INACTIVE") status = target.userId ? "ACTIVE" : "SCHEDULE_ONLY";
+
+    const practitioner = await prisma.practitioner.update({
+      where: { id: target.id },
+      data: { ...data, active: req.body.active, status },
     });
     return res.json({ message: "Profesional actualizado", practitioner });
   } catch (error) {

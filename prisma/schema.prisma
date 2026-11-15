@@ -147,6 +147,7 @@ model User {
   role                   Role           @default(EMPLOYEE)
   passwordResetTokenHash String?        @unique
   passwordResetExpiresAt DateTime?
+  disabledAt             DateTime?
   createdAt              DateTime       @default(now())
   updatedAt              DateTime       @updatedAt
   appointments           Date[]
@@ -241,8 +242,12 @@ model Customer {
   phones                 PhoneNumber[]
   legacyFolderName       String?
   legacySourceRow        Int?                    @unique
+  archivedAt             DateTime?
+  archivedById           String?
   createdAt              DateTime                @default(now())
   updatedAt              DateTime                @updatedAt
+
+  @@index([archivedAt])
 }
 
 model Date {
@@ -334,4 +339,19 @@ model BodyPartAssessment {
   subBodyPart SubBodyPart
   description String
   ficha       Ficha       @relation(fields: [fichaId], references: [id], onDelete: Cascade)
+}
+
+// Registro de accesos a datos clínicos. Sin claves foráneas a propósito: las
+// entradas se conservan aunque se borre el usuario o el documento.
+model AccessLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String
+  customerId String?
+  docId      String?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([customerId, createdAt])
+  @@index([userId, createdAt])
 }

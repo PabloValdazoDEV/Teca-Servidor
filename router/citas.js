@@ -4,7 +4,6 @@ const express = require("express");
 const router = express.Router();
 const authMiddleware = require("../middelwares/authMiddleware");
 const prisma = require("../prisma/prisma");
-const sendSms = require("../config/sendSms");
 const transporter = require("../config/nodemail");
 const appointmentCommunications = require("../config/appointmentCommunications");
 const preferredCommunications = require("../config/preferredCommunications");
@@ -18,7 +17,6 @@ const {
   deliverAppointmentSms,
 } = require("../services/appointmentSms");
 const { DateTime } = require("luxon");
-const { rateLimit } = require("express-rate-limit");
 const {
   DEFAULT_HOURS,
   appointmentFitsExtendedSchedule,
@@ -26,36 +24,6 @@ const {
 } = require("../services/clinicSchedule");
 
 router.use(authMiddleware);
-
-const communicationLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  limit: 20,
-  keyGenerator: (req) => req.user.id,
-  standardHeaders: "draft-7",
-  legacyHeaders: false,
-  message: { message: "Communication limit reached; try again later" },
-});
-
-function addMinutesToDate(dateString, minutesToAdd) {
-  const parsedDate = DateTime.fromISO(dateString.replace(" ", "T"), {
-    zone: "Europe/Madrid",
-  });
-
-  if (!parsedDate.isValid) {
-    throw new Error("Fecha inválida o malformateada");
-  }
-
-  const updatedDate = parsedDate.plus({ minutes: minutesToAdd });
-
-  return updatedDate.toFormat("yyyy-MM-dd HH:mm:ss");
-}
-
-function convertToISOString(date) {
-  if (!(date instanceof Date) || isNaN(date.getTime())) {
-    throw new Error("Invalid date object");
-  }
-  return date.toISOString();
-}
 
 async function getSchedulingContext(practitionerId) {
   const [practitioner, clinic] = await Promise.all([
@@ -89,38 +57,8 @@ function practitionerWhere(practitionerId, userId) {
   };
 }
 
-router.post("/sendCommunication", communicationLimiter, async (req, res) => {
-  const { to, message } = req.body;
-
-  if (!sendSms.isEnabled()) {
-    return res.status(503).json({
-      success: false,
-      message: "Los envíos mediante Twilio están desactivados",
-    });
-  }
-
-  if (
-    typeof to !== "string" ||
-    !/^\+[1-9]\d{7,14}$/.test(to) ||
-    typeof message !== "string" ||
-    !message.trim() ||
-    message.length > 600
-  ) {
-    return res.status(400).json({ message: "Invalid phone number or message" });
-  }
-
-  try {
-    const response = await sendSms(to, message);
-    return res.status(200).json({
-      success: true,
-      messageId: response.sid,
-      status: response.status,
-    });
-  } catch (error) {
-    console.error("SMS delivery failed");
-    return res.status(502).json({ success: false, message: "SMS delivery failed" });
-  }
-});
+// La ruta /sendCommunication (SMS de texto libre a cualquier número) se ha
+// eliminado: los SMS de citas se envían solo desde el flujo de creación/edición.
 
 router.post("/dateCreate", async (req, res) => {
   const {
@@ -174,6 +112,9 @@ router.post("/dateCreate", async (req, res) => {
     }
     if (!customeDate) {
       return res.status(404).json({ message: "Cliente no encontrado" });
+    }
+    if (customeDate.archivedAt) {
+      return res.status(409).json({ message: "El paciente está archivado. Restáuralo para darle citas." });
     }
     const fitsAllowedSchedule = clinic.allowOutsideHours
       ? appointmentFitsExtendedSchedule({
@@ -296,105 +237,19 @@ router.post("/dateCreate", async (req, res) => {
   }
 });
 
-router.get("/calendario", async (req, res) => {
-  const { trabajador } = req.query;
-
-  try {
-    if (!trabajador) {
-      return res.status(400).json({ error: "Falta el parámetro trabajador" });
-    }
-    const trabajadorFind = await prisma.practitioner.findUnique({
-      where: { id: trabajador },
-    });
-
-    if (!trabajadorFind) {
-      return res.status(400).json({ error: "User not find" });
-    }
-
-    const citasFiltradas = await prisma.date.findMany({
-      where: {
-        ...practitionerWhere(trabajador, trabajadorFind.userId),
-      },
-      include: {
-        customer: {
-          include: {
-            phones: true,
-          },
-        },
-        user: true,
-        practitioner: true,
-      },
-    });
-
-    if (citasFiltradas.length === 0) {
-      return res
-        .status(404)
-        .json({ message: "No hay citas para este trabajador" });
-    }
-
-    const dataDate = citasFiltradas.map((cita) => {
-      const { citaDate, advance_date, customer, practitioner, user, time, dateObservation } =
-        cita;
-
-      return {
-        userId: practitioner?.id || user.id,
-        userName: practitioner?.name || user.name,
-        customerName: customer.fullName,
-        start: addMinutesToDate(convertToISOString(citaDate), 0),
-        end: addMinutesToDate(convertToISOString(citaDate), time),
-        advance_date: advance_date,
-        dateObservation: dateObservation,
-      };
-    });
-
-    res.json(dataDate);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-router.get("/createForm", async (req, res) => {
-  try {
-    const dataCustomers = await prisma.customer.findMany({
-      include: {
-        phones: true,
-      },
-    });
-
-    const sanitizedCustomers = dataCustomers.map((customer) => ({
-      ...customer,
-      id: customer.id.toString(),
-      phones: customer.phones
-        .filter((phone) => phone.phoneNumber)
-        .map((phone) => ({
-          ...phone,
-          id: phone.id.toString(),
-          phoneNumber: phone.phoneNumber.toString(),
-        })),
-    }));
-
-    const dataUsers = await prisma.practitioner.findMany({
-      where: { active: true },
-      select: {
-        id: true,
-        name: true,
-        lastName: true,
-      },
-    });
-    res.json({
-      dataCustomers: sanitizedCustomers,
-      dataUsers: dataUsers,
-      dataPractitioners: dataUsers,
-    });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
 router.get("/createCalendar/:id", async (req, res) => {
   const { id } = req.params;
+  // Rango opcional (?from=&to= en ISO): la agenda pide solo las semanas visibles
+  // en lugar de todo el histórico del profesional.
+  const from = req.query.from ? new Date(req.query.from) : null;
+  const to = req.query.to ? new Date(req.query.to) : null;
+  const hasRange = from && to && !Number.isNaN(from.getTime()) && !Number.isNaN(to.getTime()) && from < to;
+  if ((req.query.from || req.query.to) && !hasRange) {
+    return res.status(400).json({ message: "Rango de fechas no válido" });
+  }
+  if (hasRange && to.getTime() - from.getTime() > 400 * 24 * 60 * 60 * 1000) {
+    return res.status(400).json({ message: "El rango de fechas es demasiado amplio" });
+  }
   try {
     const dataDatesUser = await prisma.date.findMany({
       where: {
@@ -402,6 +257,10 @@ router.get("/createCalendar/:id", async (req, res) => {
           { practitionerId: id },
           { practitionerId: null, userId: id },
         ],
+        // Margen de un día: incluye citas que empiezan antes y terminan dentro.
+        ...(hasRange
+          ? { citaDate: { gte: new Date(from.getTime() - 24 * 60 * 60 * 1000), lt: to } }
+          : {}),
       },
       include: {
         customer: {
@@ -497,6 +356,9 @@ router.put("/update", async (req, res) => {
     }
     if (!customeDate) {
       return res.status(404).json({ message: "Cliente no encontrado" });
+    }
+    if (customeDate.archivedAt) {
+      return res.status(409).json({ message: "El paciente está archivado. Restáuralo para darle citas." });
     }
     const fitsAllowedSchedule = clinic.allowOutsideHours
       ? appointmentFitsExtendedSchedule({
@@ -632,28 +494,6 @@ router.put("/update", async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error" });
-  }
-});
-
-router.get("/users", async (req, res) => {
-  try {
-    const response = await prisma.practitioner.findMany({
-      where: { active: true },
-      select: {
-        name: true,
-        lastName: true,
-        id: true,
-      },
-    });
-    const data = response.map((user) => {
-      return {
-        id: user.id,
-        name: `${user.name} ${user.lastName || ""}`.trim(),
-      };
-    });
-    res.send(data);
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
   }
 });
 

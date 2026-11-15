@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const prisma = require("../prisma/prisma");
+const { accountStatusSelect, isAccountDisabled } = require("../utils/accountStatus");
 const {
   isAllowedOrigin,
   jwtAudience,
@@ -71,14 +72,18 @@ const authMiddleware = async (req, res, next) => {
         name: true,
         lastName: true,
         role: true,
+        ...accountStatusSelect,
       },
     });
 
-    if (!user) {
+    // Una cuenta desactivada pierde el acceso en su siguiente petición, aunque
+    // tenga una sesión abierta.
+    if (!user || isAccountDisabled(user)) {
       return rejectUnauthorized(res);
     }
 
-    req.user = user;
+    const { disabledAt: _disabledAt, ...currentUser } = user;
+    req.user = currentUser;
     req.authenticationType = authenticationType;
     return next();
   } catch (error) {

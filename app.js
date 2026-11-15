@@ -103,7 +103,13 @@ app.use((error, req, res, next) => {
   return res.status(500).json({ message: "Internal server error" });
 });
 
-if (require.main === module) {
+const runningUnderPassenger = typeof globalThis.PhusionPassenger !== "undefined";
+
+if (runningUnderPassenger) {
+  app.listen(process.env.PORT, () => {
+    console.log("El servidor está escuchando mediante Passenger");
+  });
+} else if (require.main === module) {
   app.listen(PORT, BIND_HOST, () => {
     console.log(`El servidor está escuchando en ${BIND_HOST}:${PORT}`);
   });

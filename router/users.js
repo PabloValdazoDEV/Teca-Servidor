@@ -28,8 +28,10 @@ router.get("/", async (req, res) => {
         name: true,
         lastName: true,
         role: true,
+        disabledAt: true,
         createdAt: true,
         updatedAt: true,
+        practitioner: { select: { id: true, active: true } },
       },
       orderBy: [{ role: "asc" }, { name: "asc" }, { lastName: "asc" }],
     });
@@ -98,6 +100,50 @@ router.put("/:id", async (req, res) => {
     }
 
     console.error("Employee update failed");
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Activa o desactiva el acceso a TECA. No toca la agenda: un profesional sin
+// acceso puede seguir recibiendo citas que da recepción.
+router.put("/:id/access", async (req, res) => {
+  if (typeof req.body.active !== "boolean") {
+    return res.status(400).json({ message: "Indica si el acceso queda activo" });
+  }
+
+  try {
+    const target = await prisma.user.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, role: true },
+    });
+
+    if (!target || !manageableRoles(req.user.role).includes(target.role)) {
+      return res.status(404).json({ message: "Employee not found" });
+    }
+    if (target.id === req.user.id) {
+      return res.status(400).json({ message: "No puedes desactivar tu propio acceso" });
+    }
+
+    const user = await prisma.$transaction(async (transaction) => {
+      const updated = await transaction.user.update({
+        where: { id: target.id },
+        data: { disabledAt: req.body.active ? null : new Date() },
+        select: { id: true, disabledAt: true },
+      });
+      // Sus sesiones recordadas se cierran ya; las abiertas caen en la siguiente
+      // petición porque el middleware comprueba el estado de la cuenta.
+      if (!req.body.active) {
+        await transaction.session.deleteMany({ where: { userId: target.id } });
+      }
+      return updated;
+    });
+
+    return res.json({
+      message: req.body.active ? "Acceso reactivado" : "Acceso desactivado",
+      user,
+    });
+  } catch (error) {
+    console.error("Employee access update failed", error);
     return res.status(500).json({ message: "Server error" });
   }
 });

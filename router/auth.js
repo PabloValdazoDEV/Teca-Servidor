@@ -35,6 +35,11 @@ const {
   revokeRememberedSession,
   rotateRememberedSession,
 } = require("../services/sessionService");
+const {
+  DISABLED_ACCOUNT_MESSAGE,
+  accountStatusSelect,
+  isAccountDisabled,
+} = require("../utils/accountStatus");
 
 const VALID_ROLES = new Set(["ADMIN", "EMPLOYEE"]);
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync(
@@ -109,6 +114,11 @@ router.post(
   requireRole("SUPERADMIN", "ADMIN"),
   async (req, res) => {
   const { email, password, name, lastName, role } = req.body;
+  // Recepción no necesita agenda: withAgenda=false crea solo la cuenta.
+  const withAgenda = req.body.withAgenda !== false;
+  // Dar acceso a un profesional que ya tiene agenda: se enlaza la cuenta a esa
+  // agenda en lugar de crear otra.
+  const practitionerId = typeof req.body.practitionerId === "string" ? req.body.practitionerId : null;
   const normalizedEmail = normalizeEmail(email);
   const normalizedName = typeof name === "string" ? name.trim() : "";
   const normalizedLastName = typeof lastName === "string" ? lastName.trim() : "";
@@ -144,15 +154,25 @@ router.post(
         },
       });
 
-      await transaction.practitioner.create({
-        data: {
-          userId: createdUser.id,
-          name: normalizedName,
-          lastName: normalizedLastName,
-          email: normalizedEmail,
-          status: "ACTIVE",
-        },
-      });
+      if (practitionerId) {
+        const linked = await transaction.practitioner.updateMany({
+          where: { id: practitionerId, userId: null },
+          data: { userId: createdUser.id, email: normalizedEmail, status: "ACTIVE" },
+        });
+        if (linked.count !== 1) {
+          throw Object.assign(new Error("PRACTITIONER_NOT_LINKABLE"), { code: "PRACTITIONER_NOT_LINKABLE" });
+        }
+      } else if (withAgenda) {
+        await transaction.practitioner.create({
+          data: {
+            userId: createdUser.id,
+            name: normalizedName,
+            lastName: normalizedLastName,
+            email: normalizedEmail,
+            status: "ACTIVE",
+          },
+        });
+      }
 
       return createdUser;
     });
@@ -163,7 +183,10 @@ router.post(
     });
   } catch (error) {
     if (error.code === "P2002") {
-      return res.status(409).json({ message: "A user with that email already exists" });
+      return res.status(409).json({ message: "Ya existe una cuenta con ese email" });
+    }
+    if (error.code === "PRACTITIONER_NOT_LINKABLE") {
+      return res.status(409).json({ message: "Ese profesional ya tiene una cuenta o no existe" });
     }
 
     console.error(error);
@@ -191,6 +214,11 @@ router.post("/login", loginLimiter, async (req, res) => {
 
     if (!user || !passwordMatches) {
       return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    // Solo se revela que la cuenta está desactivada tras validar la contraseña.
+    if (isAccountDisabled(user)) {
+      return res.status(403).json({ message: DISABLED_ACCOUNT_MESSAGE, code: "ACCOUNT_DISABLED" });
     }
 
     const token = createAccessToken(user);
@@ -282,10 +310,10 @@ router.post("/forgot-password", forgotPasswordLimiter, async (req, res) => {
   try {
     const user = await prisma.user.findUnique({
       where: { email: normalizedEmail },
-      select: { id: true, email: true },
+      select: { id: true, email: true, ...accountStatusSelect },
     });
 
-    if (!user) {
+    if (!user || isAccountDisabled(user)) {
       return res.status(202).json(genericResponse);
     }
 
@@ -344,10 +372,10 @@ router.post("/reset-password", resetPasswordLimiter, async (req, res) => {
         passwordResetTokenHash: hashOpaqueToken(token),
         passwordResetExpiresAt: { gt: new Date() },
       },
-      select: { id: true, password: true },
+      select: { id: true, password: true, ...accountStatusSelect },
     });
 
-    if (!user || (await bcrypt.compare(password, user.password))) {
+    if (!user || isAccountDisabled(user) || (await bcrypt.compare(password, user.password))) {
       return res.status(400).json({ message: "Invalid or expired recovery link" });
     }
 
@@ -371,10 +399,12 @@ router.post("/reset-password", resetPasswordLimiter, async (req, res) => {
       }
 
       await tx.session.deleteMany({ where: { userId: user.id } });
+      // Completar una invitación activa la cuenta; un reseteo nunca reactiva a un
+      // profesional que la administración haya desactivado.
       if (tx.practitioner?.updateMany) {
         await tx.practitioner.updateMany({
-          where: { userId: user.id },
-          data: { status: "ACTIVE", active: true },
+          where: { userId: user.id, status: "INVITED", active: true },
+          data: { status: "ACTIVE" },
         });
       }
     });

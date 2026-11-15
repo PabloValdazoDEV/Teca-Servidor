@@ -10,6 +10,7 @@ const clinic = require("./clinic");
 const practitioners = require("./practitioners");
 const system = require("./system");
 const appConfig = require("./appConfig");
+const team = require("./team");
 
 router.use("/citas", citas)
 router.use("/customers", customers)
@@ -19,6 +20,7 @@ router.use("/clinic", clinic)
 router.use("/practitioners", practitioners)
 router.use("/system-status", system)
 router.use("/app-config", appConfig)
+router.use("/team", team)
 router.use("/", auth);
 
 module.exports = router;
